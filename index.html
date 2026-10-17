@@ -244,7 +244,7 @@ tailwind.config = {
             <span class="flex items-center gap-1.5"><kbd class="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px] text-zinc-200">Shift</kbd> Select</span>
             <span class="flex items-center gap-1.5"><kbd class="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px] text-zinc-200">Z X A S</kbd> Acción</span>
           </div>
-          <span class="text-[11px]">Controles configurables en el menú ⚙ del emulador</span>
+          <span class="text-[11px]">PS2: flechas · Z/X/A/S: ✕/○/□/△ · Enter: Start · Retroceso: Select · 1/2/3 y 8/9/0: L/R · F/H/T/G y J/L/I/K: sticks · mando estándar (sticks digitales)</span>
         </div>
       </div>
 
@@ -978,7 +978,7 @@ async function probePS2() {
 }
 
 async function bootPS2(diskMode) {
-  diskMode = diskMode || 'chunk';
+  diskMode = 'device';
   const lv = $('loading-view'); lv.classList.remove('hidden'); lv.classList.add('flex');
   $('launch-actions').classList.add('hidden');
   const box = $('active-emulator-container');
@@ -986,12 +986,17 @@ async function bootPS2(diskMode) {
   const frame = document.createElement('iframe');
   frame.id = 'emu-frame';
   frame.allow = 'autoplay; fullscreen; gamepad; cross-origin-isolated';
+  const frameReady = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('ps2.html no cargó')), 15000);
+    frame.onload = () => { clearTimeout(timeout); resolve(); };
+    frame.onerror = () => { clearTimeout(timeout); reject(new Error('No se pudo cargar ps2.html')); };
+  });
   frame.src = 'ps2.html';
   box.appendChild(frame); box.classList.remove('hidden');
   $('btn-reset').classList.remove('hidden'); $('btn-log').classList.remove('hidden');
   $('loader-ring').classList.remove('done');
   $('loading-title').textContent = 'Iniciando Play! (PS2)';
-  $('loading-subtitle').textContent = 'Cargando motor y leyendo tu disco a memoria…';
+  $('loading-subtitle').textContent = 'Cargando motor; disco local con lectura bajo demanda…';
   $('loading-bar').style.width = '0%'; $('loading-percent-badge').textContent = '0%';
   const fail = (msg) => {
     techLog('[ERROR] ' + msg, 'text-red-400');
@@ -1001,7 +1006,7 @@ async function bootPS2(diskMode) {
     showActions(msg + ' Pulsa el botón "Log" o revisa el registro de arriba para más detalles.', {});
   };
   try {
-    await new Promise((res, rej) => { frame.onload = res; setTimeout(() => rej(new Error('ps2.html no cargó')), 15000); });
+    await frameReady;
     const api = frame.contentWindow.AVJ_PS2;
     if (!api) throw new Error('ps2.html no inició correctamente.');
     S.ps2run = { api };
@@ -1011,7 +1016,7 @@ async function bootPS2(diskMode) {
       onProgress: (f, bytes) => {
         const pct = Math.round(f * 100);
         $('loading-bar').style.width = pct + '%'; $('loading-percent-badge').textContent = pct + '%';
-        $('telemetry-bytes-read').textContent = `${fmtBytes(bytes)} cargados en memoria`; $('telemetry-read-speed').textContent = '';
+        $('telemetry-bytes-read').textContent = `Disco local conectado · lectura bajo demanda`; $('telemetry-read-speed').textContent = '';
       },
       onStart: () => {
         $('loading-view').classList.add('hidden'); $('loading-view').classList.remove('flex');
@@ -1019,25 +1024,17 @@ async function bootPS2(diskMode) {
         S.running = true; S.startedAt = Date.now();
         clearInterval(S.timer); S.timer = setInterval(() => { $('playtime-text').textContent = fmtDur(Date.now() - S.startedAt); }, 1000);
         try { frame.focus(); frame.contentWindow.focus(); } catch (e) { /* ignorar */ }
-        toast(`Play! ejecutando "${S.file.name}". Haz clic en la pantalla para dar foco al teclado.`, 'success');
+        toast(`Arranque solicitado para "${S.file.name}". Haz clic en la pantalla para dar foco al teclado.`, 'success');
         if (!S.welcomed) { S.welcomed = true; setTimeout(openModal, 3500); }
       },
       onFps: (f, st) => { const pill = $('fps-pill'); pill.textContent = st ? `${f} fps · ${st.frames} fr` : `${f} fps`; if (st) pill.title = `Frames totales: ${st.frames} · Lecturas del disco: ${st.reads} · ${st.mb.toFixed(1)} MB leídos`; },
       onStall: (st) => {
         techLog(`[AVISO] 20 s sin ningún frame. Lecturas del disco: ${st.reads} (${st.mb.toFixed(1)} MB, última posición ${st.lastPos}).`, 'text-amber-300');
         $('tech-log').classList.remove('hidden');
-        if (diskMode === 'chunk' && st.reads < 3 && !S.ps2retried) {
-          S.ps2retried = true;
-          techLog('[AUTO] El emulador no está leyendo el disco. Reintento con el modo de disco compatible (usa más RAM)…', 'text-avj-300');
-          toast('Reintentando en modo compatible…', 'info');
-          try { S.ps2run && S.ps2run.api.stop(); } catch (e) { /* ignorar */ }
-          setTimeout(() => bootPS2('memfs'), 400);
-          return;
-        }
         techLog(st.reads < 3 ? '[AVISO] Sigue sin leer el disco: el motor parece detenido al abrirlo.' : '[AVISO] El motor sí lee el disco: probablemente está compilando código o va muy lento. Espera 1–2 minutos y copia este Log si no aparece imagen.', 'text-amber-300');
         toast('Sin imagen todavía. Abrí el Log con el diagnóstico.', 'warn');
       },
-      onMemcards: async (files) => { try { await dbPut('bios_store', { id: 'ps2_memcards', files, ts: Date.now() }); } catch (e) { /* ignorar */ } },
+      onMemcards: (files) => dbPut('bios_store', { id: 'ps2_memcards', files, ts: Date.now() }),
       onError: (m) => fail(m)
     });
   } catch (e) { fail(e.message || String(e)); }
@@ -1045,7 +1042,7 @@ async function bootPS2(diskMode) {
 
 function resetViewport(keepFile) {
   if (S.ps2run) {
-    try { const files = S.ps2run.api.collectMemcards(); if (files && files.length) dbPut('bios_store', { id: 'ps2_memcards', files, ts: Date.now() }).catch(() => {}); S.ps2run.api.stop(); } catch (e) { /* ignorar */ }
+    try { S.ps2run.api.stop(); } catch (e) { /* ignorar */ }
     S.ps2run = null; S.ps2retried = false;
   }
   $('tech-log').innerHTML = ''; $('tech-log').classList.add('hidden');
