@@ -977,7 +977,10 @@ async function probePS2() {
   S.ps2 = r;
 }
 
-async function bootPS2() {
+async function bootPS2(diskMode) {
+  diskMode = diskMode || 'chunk';
+  const lv = $('loading-view'); lv.classList.remove('hidden'); lv.classList.add('flex');
+  $('launch-actions').classList.add('hidden');
   const box = $('active-emulator-container');
   box.innerHTML = '';
   const frame = document.createElement('iframe');
@@ -1003,7 +1006,7 @@ async function bootPS2() {
     if (!api) throw new Error('ps2.html no inició correctamente.');
     S.ps2run = { api };
     let mem = null; try { mem = await dbGet('bios_store', 'ps2_memcards'); } catch (e) { /* sin memory cards */ }
-    await api.boot(S.file, { memcards: mem ? mem.files : null }, {
+    await api.boot(S.file, { memcards: mem ? mem.files : null, diskMode }, {
       onLog: (t, c) => techLog(t, c),
       onProgress: (f, bytes) => {
         const pct = Math.round(f * 100);
@@ -1019,11 +1022,19 @@ async function bootPS2() {
         toast(`Play! ejecutando "${S.file.name}". Haz clic en la pantalla para dar foco al teclado.`, 'success');
         if (!S.welcomed) { S.welcomed = true; setTimeout(openModal, 3500); }
       },
-      onFps: (f, st) => { const pill = $('fps-pill'); pill.textContent = f + ' fps'; if (st) pill.title = `Lecturas del disco: ${st.reads} · ${st.mb.toFixed(1)} MB leídos`; },
+      onFps: (f, st) => { const pill = $('fps-pill'); pill.textContent = st ? `${f} fps · ${st.frames} fr` : `${f} fps`; if (st) pill.title = `Frames totales: ${st.frames} · Lecturas del disco: ${st.reads} · ${st.mb.toFixed(1)} MB leídos`; },
       onStall: (st) => {
-        techLog(`[AVISO] 25 s sin imagen. Lecturas del disco: ${st.reads} (${st.mb.toFixed(1)} MB, última posición ${st.lastPos}).`, 'text-amber-300');
-        techLog(st.reads < 3 ? '[AVISO] El emulador casi no ha leído el disco: parece detenido al abrirlo.' : '[AVISO] El emulador sí lee el disco: probablemente está compilando código o el juego aún arranca. Espera 1–2 minutos más.', 'text-amber-300');
+        techLog(`[AVISO] 20 s sin ningún frame. Lecturas del disco: ${st.reads} (${st.mb.toFixed(1)} MB, última posición ${st.lastPos}).`, 'text-amber-300');
         $('tech-log').classList.remove('hidden');
+        if (diskMode === 'chunk' && st.reads < 3 && !S.ps2retried) {
+          S.ps2retried = true;
+          techLog('[AUTO] El emulador no está leyendo el disco. Reintento con el modo de disco compatible (usa más RAM)…', 'text-avj-300');
+          toast('Reintentando en modo compatible…', 'info');
+          try { S.ps2run && S.ps2run.api.stop(); } catch (e) { /* ignorar */ }
+          setTimeout(() => bootPS2('memfs'), 400);
+          return;
+        }
+        techLog(st.reads < 3 ? '[AVISO] Sigue sin leer el disco: el motor parece detenido al abrirlo.' : '[AVISO] El motor sí lee el disco: probablemente está compilando código o va muy lento. Espera 1–2 minutos y copia este Log si no aparece imagen.', 'text-amber-300');
         toast('Sin imagen todavía. Abrí el Log con el diagnóstico.', 'warn');
       },
       onMemcards: async (files) => { try { await dbPut('bios_store', { id: 'ps2_memcards', files, ts: Date.now() }); } catch (e) { /* ignorar */ } },
@@ -1035,7 +1046,7 @@ async function bootPS2() {
 function resetViewport(keepFile) {
   if (S.ps2run) {
     try { const files = S.ps2run.api.collectMemcards(); if (files && files.length) dbPut('bios_store', { id: 'ps2_memcards', files, ts: Date.now() }).catch(() => {}); S.ps2run.api.stop(); } catch (e) { /* ignorar */ }
-    S.ps2run = null;
+    S.ps2run = null; S.ps2retried = false;
   }
   $('tech-log').innerHTML = ''; $('tech-log').classList.add('hidden');
   flushPlaytime(); clearInterval(S.timer);
