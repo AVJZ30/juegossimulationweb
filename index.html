@@ -1019,7 +1019,13 @@ async function bootPS2() {
         toast(`Play! ejecutando "${S.file.name}". Haz clic en la pantalla para dar foco al teclado.`, 'success');
         if (!S.welcomed) { S.welcomed = true; setTimeout(openModal, 3500); }
       },
-      onFps: (f) => { $('fps-pill').textContent = f + ' fps'; },
+      onFps: (f, st) => { const pill = $('fps-pill'); pill.textContent = f + ' fps'; if (st) pill.title = `Lecturas del disco: ${st.reads} · ${st.mb.toFixed(1)} MB leídos`; },
+      onStall: (st) => {
+        techLog(`[AVISO] 25 s sin imagen. Lecturas del disco: ${st.reads} (${st.mb.toFixed(1)} MB, última posición ${st.lastPos}).`, 'text-amber-300');
+        techLog(st.reads < 3 ? '[AVISO] El emulador casi no ha leído el disco: parece detenido al abrirlo.' : '[AVISO] El emulador sí lee el disco: probablemente está compilando código o el juego aún arranca. Espera 1–2 minutos más.', 'text-amber-300');
+        $('tech-log').classList.remove('hidden');
+        toast('Sin imagen todavía. Abrí el Log con el diagnóstico.', 'warn');
+      },
       onMemcards: async (files) => { try { await dbPut('bios_store', { id: 'ps2_memcards', files, ts: Date.now() }); } catch (e) { /* ignorar */ } },
       onError: (m) => fail(m)
     });
