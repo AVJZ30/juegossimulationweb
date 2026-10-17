@@ -16,6 +16,7 @@
 (function () {
   'use strict';
   const canvas = document.getElementById('outputCanvas');
+  const stats = { reads: 0, bytes: 0, lastPos: 0 };
   let Mod = null, fpsTimer = null, memTimer = null, lastMemSig = '', h = {};
   const log = (t, c) => { try { h.onLog && h.onLog(t, c); } catch (e) {} };
   const MAX_BYTES = 3 * 1024 * 1024 * 1024;
@@ -53,7 +54,7 @@
   }
 
   // Crea un archivo virtual que lee directamente de los trozos en RAM (sin duplicar el ISO en MEMFS)
-  function mountChunked(FS, path, size, chunks, CH) {
+  function mountChunked(FS, path, size, chunks, CH, stats) {
     const node = FS.create(path, 0o444);
     node.usedBytes = size;
     node.stream_ops = {
@@ -64,16 +65,20 @@
         return p;
       },
       read(stream, buffer, offset, length, position) {
-        if (position >= size) return 0;
-        const n = Math.min(length, size - position);
-        const dst = new Uint8Array(buffer.buffer, buffer.byteOffset + offset, n);
-        let done = 0;
-        while (done < n) {
-          const p = position + done, c = chunks[(p / CH) | 0], co = p % CH, take = Math.min(n - done, c.length - co);
-          dst.set(c.subarray(co, co + take), done);
-          done += take;
-        }
-        return done;
+        try {
+          if (position >= size) return 0;
+          const n = Math.min(length, size - position);
+          const dst = new Uint8Array(buffer.buffer, buffer.byteOffset + offset, n);
+          let done = 0;
+          while (done < n) {
+            const p = position + done, c = chunks[(p / CH) | 0], co = p % CH, take = Math.min(n - done, c.length - co);
+            dst.set(c.subarray(co, co + take), done);
+            done += take;
+          }
+          stats.reads++; stats.bytes += n; stats.lastPos = position;
+          if (stats.reads <= 6) log(`[disco] lectura #${stats.reads}: pos ${position} · ${n} bytes`, 'text-zinc-400');
+          return done;
+        } catch (e) { log('[disco] ERROR de lectura: ' + (e && e.message ? e.message : e), 'text-red-400'); throw new FS.ErrnoError(5); }
       },
       write() { throw new FS.ErrnoError(63); }
     };
@@ -153,7 +158,8 @@
     const path = '/discs/' + safe;
     log(`Leyendo "${file.name}" a memoria (${(file.size / 1048576).toFixed(0)} MB)…`, 'text-avj-300');
     const { chunks, CH } = await readChunks(file, h.onProgress);
-    mountChunked(FS, path, file.size, chunks, CH);
+    stats.reads = 0; stats.bytes = 0; stats.lastPos = 0;
+    mountChunked(FS, path, file.size, chunks, CH, stats);
     log('Disco montado en ' + path, 'text-emerald-400');
 
     if (typeof Mod._initVm === 'function') { log('Inicializando máquina virtual (initVm)…'); Mod._initVm(); }
@@ -172,12 +178,20 @@
     try { window.focus(); canvas.focus(); } catch (e) {}
 
     if (typeof Mod.getFrames === 'function') {
-      let last = null, lastT = performance.now();
+      let last = null, lastT = performance.now(), perCall = false, n = 0, zeroSecs = 0, warned = false;
       fpsTimer = setInterval(() => {
         try {
           const f = Number(Mod.getFrames()), now = performance.now();
-          if (last !== null && now > lastT) h.onFps && h.onFps(Math.max(0, Math.round((f - last) * 1000 / (now - lastT))));
-          last = f; lastT = now;
+          if (n < 8) log(`[fps] getFrames() = ${f}`, 'text-zinc-400');
+          let fps = 0;
+          if (last !== null && f < last) perCall = true;           // el contador se reinicia al leerlo
+          if (perCall) fps = f;
+          else if (last !== null && now > lastT) fps = (f - last) * 1000 / (now - lastT);
+          last = f; lastT = now; n++;
+          fps = Math.max(0, Math.round(fps));
+          h.onFps && h.onFps(fps, { reads: stats.reads, mb: stats.bytes / 1048576 });
+          zeroSecs = fps === 0 ? zeroSecs + 1 : 0;
+          if (zeroSecs >= 25 && !warned) { warned = true; h.onStall && h.onStall({ reads: stats.reads, mb: stats.bytes / 1048576, lastPos: stats.lastPos }); }
         } catch (e) { clearInterval(fpsTimer); }
       }, 1000);
     }
