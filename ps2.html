@@ -15,8 +15,9 @@
    La página principal llama a window.AVJ_PS2.boot(file, opts, hooks). */
 (function () {
   'use strict';
+  const BUILD = 'c';
   const canvas = document.getElementById('outputCanvas');
-  const stats = { reads: 0, bytes: 0, lastPos: 0 };
+  const stats = { reads: 0, bytes: 0, lastPos: 0, stat: 0 };
   let Mod = null, fpsTimer = null, memTimer = null, lastMemSig = '', h = {};
   const log = (t, c) => { try { h.onLog && h.onLog(t, c); } catch (e) {} };
   const MAX_BYTES = 3 * 1024 * 1024 * 1024;
@@ -57,8 +58,14 @@
   function mountChunked(FS, path, size, chunks, CH, stats) {
     const node = FS.create(path, 0o444);
     node.usedBytes = size;
+    const origGet = node.node_ops && node.node_ops.getattr;
+    if (origGet) node.node_ops = Object.assign({}, node.node_ops, { getattr(nd) { if (stats.stat++ < 4) log('[disco] getattr (tamaño consultado)', 'text-zinc-400'); return origGet.call(this, nd); } });
     node.stream_ops = {
+      open() { log('[disco] open: el emulador abrió el ISO', 'text-emerald-400'); },
+      close() { log('[disco] close', 'text-zinc-400'); },
       llseek(stream, offset, whence) {
+        if (stats.seeks === undefined) stats.seeks = 0;
+        if (stats.seeks++ < 4) log(`[disco] llseek(${offset}, whence ${whence})`, 'text-zinc-400');
         let p = offset;
         if (whence === 1) p += stream.position; else if (whence === 2) p += size;
         if (p < 0) throw new FS.ErrnoError(28);
@@ -125,6 +132,13 @@
     if (why) throw new Error(why);
     if (file.size > MAX_BYTES) throw new Error('El archivo supera 3 GB y no cabe en la memoria del navegador. Conviértelo a .chd (chdman createdvd) para reducirlo.');
 
+    log(`[versión] ps2.html build ${BUILD}`, 'text-white font-bold');
+    // Registrar la creación de contextos WebGL en esta página
+    try {
+      const og = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function (t, a) { const r = og.call(this, t, a); if (this.id === 'outputCanvas') log(`[gl] getContext('${t}') → ${r ? 'OK' : 'NULL'}`, 'text-zinc-400'); return r; };
+      canvas.addEventListener('webglcontextlost', () => log('[gl] CONTEXTO WEBGL PERDIDO', 'text-red-400'));
+    } catch (e) { /* ignorar */ }
     try {
       const g = document.createElement('canvas').getContext('webgl2'); const ext = g && g.getExtension('WEBGL_debug_renderer_info');
       log(`[entorno] GPU: ${ext ? g.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'desconocida'} · hilos CPU: ${navigator.hardwareConcurrency || '?'} · RAM aprox: ${navigator.deviceMemory || '?'} GB · modo disco: ${opts.diskMode || 'chunk'}`, 'text-zinc-400');
@@ -177,6 +191,20 @@
       mountChunked(FS, path, file.size, chunks, CH, stats);
     }
     log('Disco montado en ' + path, 'text-emerald-400');
+
+    // Rastreo: qué archivos intenta abrir el emulador (primeras 80 llamadas)
+    (function traceFS() {
+      let n = 0; const L = (m) => { if (n++ < 80) log('[fs] ' + m, 'text-zinc-400'); };
+      ['open', 'stat', 'lstat', 'readlink', 'readdir'].forEach((k) => {
+        const orig = FS[k]; if (typeof orig !== 'function') return;
+        FS[k] = function () {
+          const a = arguments, name = typeof a[0] === 'string' ? a[0] : '(nodo)';
+          let r; try { r = orig.apply(FS, a); } catch (e) { L(`${k}("${name}") → ERROR errno=${e && e.errno}`); throw e; }
+          if (!/^\/(proc|dev)/.test(name)) L(`${k}("${name}") OK`);
+          return r;
+        };
+      });
+    })();
 
     if (typeof Mod._initVm === 'function') { log('Inicializando máquina virtual (initVm)…'); Mod._initVm(); }
 
