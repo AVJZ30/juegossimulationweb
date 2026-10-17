@@ -1,4 +1,4 @@
-/* AVJ RetroPlay · Service Worker de aislamiento (COOP/COEP)
+/* AVJ RetroPlay · Service Worker de aislamiento (COOP/COEP) · build c
    Permite usar SharedArrayBuffer en hostings que no dejan configurar cabeceras (GitHub Pages).
    Añade las cabeceras necesarias a las respuestas de tu propio sitio. */
 self.addEventListener('install', () => self.skipWaiting());
@@ -9,7 +9,7 @@ self.addEventListener('fetch', (e) => {
   if (r.cache === 'only-if-cached' && r.mode !== 'same-origin') return;
   const req = r.mode === 'no-cors' ? new Request(r, { credentials: 'omit' }) : r;
   e.respondWith(
-    fetch(req).then((res) => {
+    fetch(req, new URL(r.url).origin === self.location.origin ? { cache: 'no-store' } : undefined).then((res) => {
       if (res.status === 0) return res;               // respuesta opaca: no se puede modificar
       const h = new Headers(res.headers);
       h.set('Cross-Origin-Embedder-Policy', 'credentialless');
