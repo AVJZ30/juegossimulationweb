@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AVJ RetroPlay | Web Emulator</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: { extend: {
+    fontFamily: { sans: ['Inter','sans-serif'], display: ['Space Grotesk','sans-serif'] },
+    colors: { avj: { 50:'#f5f3ff',100:'#ede9fe',200:'#ddd6fe',300:'#c4b5fd',400:'#a78bfa',500:'#8b5cf6',600:'#7c3aed',700:'#6d28d9',800:'#5b21b6',900:'#4c1d95',950:'#1e1b4b' } }
+  } }
+};
+</script>
+<style>
+  body { background:#09090b; color:#f8fafc; overflow-x:hidden; }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-track { background:#0f0f12; }
+  ::-webkit-scrollbar-thumb { background:#4c1d95; border-radius:9999px; }
+  ::-webkit-scrollbar-thumb:hover { background:#7c3aed; }
+  .glass-panel { background:rgba(24,24,27,.75); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px); border:1px solid rgba(139,92,246,.2); }
+  .purple-glow { box-shadow:0 0 25px -5px rgba(124,58,237,.45); }
+  .purple-glow-sm { box-shadow:0 0 15px -3px rgba(124,58,237,.35); }
+  .console-card { border:1px solid #27272a; transition:all .2s; }
+  .console-card:hover { border-color:rgba(139,92,246,.5); }
+  .console-card.is-active { border:2px solid #8b5cf6; background:rgba(76,29,149,.25); box-shadow:0 0 15px -3px rgba(124,58,237,.45); }
+  .dropzone-active { border-color:#a78bfa !important; background:rgba(124,58,237,.15) !important; transform:scale(1.01); }
+  .loader-ring { display:inline-block; width:36px; height:36px; border:3px solid rgba(139,92,246,.2); border-radius:50%; border-top-color:#8b5cf6; animation:spin 1s linear infinite; }
+  .loader-ring.done { animation:none; border-color:#34d399; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @keyframes toast-in { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+  .toast { animation:toast-in .25s ease-out; }
+  #emu-frame { width:100%; height:100%; border:0; background:#000; }
+</style>
+</head>
+<body class="min-h-screen flex flex-col selection:bg-avj-600 selection:text-white">
+
+<!-- Luces de fondo -->
+<div class="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+  <div class="absolute -top-40 -left-40 w-96 h-96 bg-avj-600/20 rounded-full blur-[120px]"></div>
+  <div class="absolute top-1/3 -right-40 w-96 h-96 bg-purple-800/15 rounded-full blur-[130px]"></div>
+  <div class="absolute -bottom-40 left-1/3 w-80 h-80 bg-indigo-600/10 rounded-full blur-[100px]"></div>
+</div>
+
+<!-- Overlay global de arrastrar y soltar -->
+<div id="global-drop" class="hidden fixed inset-0 z-[60] bg-avj-950/85 backdrop-blur-sm items-center justify-center pointer-events-none">
+  <div class="text-center space-y-3 border-2 border-dashed border-avj-400 rounded-3xl px-10 py-12">
+    <i class="fa-solid fa-cloud-arrow-up text-5xl text-avj-300"></i>
+    <p class="font-display font-bold text-xl text-white">Suelta aquí tu juego, BIOS o partida</p>
+    <p class="text-xs text-avj-200">Lo detecto automáticamente por la extensión y el nombre</p>
+  </div>
+</div>
+
+<!-- CABECERA -->
+<header class="sticky top-0 z-40 glass-panel border-b border-avj-500/20">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-avj-500 to-avj-800 flex items-center justify-center purple-glow-sm border border-white/10">
+        <i class="fa-solid fa-gamepad text-white text-lg"></i>
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="font-display font-bold text-xl tracking-tight text-white">AVJ <span class="text-avj-400">RetroPlay</span></span>
+          <span class="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-avj-500/20 text-avj-300 border border-avj-500/30">v3.0</span>
+        </div>
+        <p class="text-[11px] text-zinc-400 hidden sm:block">Web Emulator by <span class="text-white font-medium">AVJ COMUNITY</span></p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 sm:gap-3">
+      <div id="gamepad-indicator" class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-zinc-900/90 border border-zinc-800 text-xs font-medium text-zinc-300 transition-all" title="Conecta un mando y presiona cualquier botón">
+        <span id="gamepad-dot" class="w-2 h-2 rounded-full bg-amber-400"></span>
+        <i id="gamepad-icon" class="fa-solid fa-keyboard text-avj-400"></i>
+        <span id="gamepad-text" class="hidden md:inline">Modo Teclado</span>
+      </div>
+      <button data-action="open-modal" class="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-avj-600 to-purple-600 hover:from-avj-500 hover:to-purple-500 text-white text-xs font-semibold transition-all purple-glow-sm">
+        <i class="fa-brands fa-whatsapp text-sm"></i><span>AVJ Comunity</span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main class="flex-grow relative z-10 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+  <!-- 1. SELECTOR DE CONSOLA -->
+  <section>
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+      <h2 class="text-sm font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-2">
+        <i class="fa-solid fa-microchip text-avj-400"></i> 1. Elige la consola
+      </h2>
+      <div class="flex items-center gap-2 flex-wrap">
+        <span id="coop-status-pill" class="text-[11px] font-mono px-2.5 py-1 rounded-lg border border-zinc-700 text-zinc-300">Verificando…</span>
+        <span id="selected-core-badge" class="text-xs text-avj-300 font-medium bg-avj-950/80 border border-avj-500/30 px-2.5 py-1 rounded-lg">Core: psx</span>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3" id="console-selector"></div>
+  </section>
+
+  <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+
+    <!-- COLUMNA PRINCIPAL -->
+    <div class="lg:col-span-8 space-y-4">
+      <div class="glass-panel rounded-3xl overflow-hidden border border-avj-500/30 purple-glow flex flex-col">
+
+        <!-- Barra superior -->
+        <div class="bg-zinc-950/90 px-4 py-3 border-b border-zinc-800/80 flex flex-wrap items-center justify-between gap-2">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <div class="flex gap-1.5 shrink-0">
+              <span class="w-3 h-3 rounded-full bg-red-500/80"></span>
+              <span class="w-3 h-3 rounded-full bg-amber-500/80"></span>
+              <span class="w-3 h-3 rounded-full bg-emerald-500/80"></span>
+            </div>
+            <span id="current-rom-title" class="text-xs font-medium text-zinc-300 ml-2 truncate max-w-[160px] sm:max-w-xs">Ningún archivo cargado</span>
+            <span id="detected-gameid-pill" class="hidden text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-avj-500/20 text-avj-300 border border-avj-500/40 shrink-0"></span>
+            <span id="fps-pill" class="hidden text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-emerald-300 border border-zinc-700 shrink-0">0 fps</span>
+            <span id="playtime-pill" class="hidden text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700 shrink-0"><i class="fa-regular fa-clock mr-1"></i><span id="playtime-text">0:00</span></span>
+          </div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <button id="btn-log" data-action="toggle-log" class="hidden px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-xs font-semibold transition-all" title="Registro técnico del emulador"><i class="fa-solid fa-terminal mr-1"></i><span class="hidden sm:inline">Log</span></button>
+            <button id="btn-quick-save" data-action="quick-save" class="hidden px-3 py-1.5 rounded-xl bg-avj-600/20 hover:bg-avj-600/40 text-avj-200 border border-avj-500/40 text-xs font-semibold transition-all" title="Guardar estado rápido (a IndexedDB)">
+              <i class="fa-solid fa-floppy-disk mr-1"></i><span class="hidden sm:inline">Guardar</span>
+            </button>
+            <button id="btn-quick-load" data-action="quick-load" class="hidden px-3 py-1.5 rounded-xl bg-avj-600/20 hover:bg-avj-600/40 text-avj-200 border border-avj-500/40 text-xs font-semibold transition-all" title="Cargar el último estado de este juego">
+              <i class="fa-solid fa-clock-rotate-left mr-1"></i><span class="hidden sm:inline">Cargar</span>
+            </button>
+            <button id="btn-reset" data-action="reset" class="hidden px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-red-950/60 hover:text-red-300 hover:border-red-500/30 border border-zinc-700 text-zinc-300 text-xs font-semibold transition-all">
+              <i class="fa-solid fa-power-off mr-1"></i>Cerrar
+            </button>
+            <button data-action="fullscreen" class="p-1.5 px-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition-all" title="Pantalla completa">
+              <i class="fa-solid fa-expand"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Viewport -->
+        <div id="emulator-viewport" class="relative w-full h-[480px] sm:h-[600px] bg-zinc-950 flex items-center justify-center overflow-hidden">
+
+          <!-- VISTA 1: Dropzone -->
+          <div id="dropzone-view" class="w-full h-full p-5 sm:p-6 flex items-center justify-center">
+            <label for="rom-file-input" id="dropzone-box" class="group w-full h-full max-w-2xl border-2 border-dashed border-avj-500/40 hover:border-avj-400 rounded-2xl bg-zinc-900/40 hover:bg-avj-950/20 p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-all">
+              <div class="w-20 h-20 rounded-2xl bg-gradient-to-br from-avj-600/30 to-purple-900/30 border border-avj-400/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                <i class="fa-solid fa-compact-disc text-4xl text-avj-400"></i>
+              </div>
+              <div id="ps2-badge-banner" class="hidden mb-2 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 text-[11px] font-semibold">
+                PS2: Play! integrado (WebAssembly) · requiere COOP/COEP y WebGL2
+              </div>
+              <h3 class="font-display font-bold text-lg sm:text-xl text-white mb-1">
+                Selecciona o arrastra tu <span id="dropzone-formats-highlight" class="text-avj-400">.BIN, .ISO, .CHD o .PBP</span>
+              </h3>
+              <p class="text-xs sm:text-sm text-zinc-400 max-w-lg mb-5">
+                Emulación <strong class="text-white">WebAssembly</strong> local. Tu archivo <strong class="text-white">no se sube a ningún servidor</strong>: se lee directamente en tu navegador.
+              </p>
+              <span class="px-5 py-2.5 rounded-xl bg-avj-600 group-hover:bg-avj-500 text-white font-semibold text-xs sm:text-sm shadow-lg shadow-avj-600/30 transition-all flex items-center gap-2">
+                <i class="fa-solid fa-folder-open"></i><span id="upload-btn-main-label">Cargar juego</span>
+              </span>
+              <div class="mt-6 flex flex-wrap items-center justify-center gap-4 text-[11px] text-zinc-400">
+                <span class="flex items-center gap-1"><i class="fa-solid fa-microchip text-emerald-400"></i> Núcleos Libretro Wasm</span>
+                <span class="flex items-center gap-1"><i class="fa-solid fa-floppy-disk text-avj-400"></i> Estados guardados</span>
+                <span class="flex items-center gap-1"><i class="fa-solid fa-gamepad text-purple-400"></i> Mandos</span>
+              </div>
+            </label>
+            <input type="file" id="rom-file-input" class="hidden" multiple>
+          </div>
+
+          <!-- VISTA 2: Análisis -->
+          <div id="loading-view" class="hidden relative z-10 w-full h-full flex-col p-5 sm:p-6 bg-zinc-950 text-left overflow-y-auto">
+            <div class="max-w-2xl w-full mx-auto space-y-4 my-auto">
+              <div class="flex items-center justify-between border-b border-zinc-800 pb-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div id="loader-ring" class="loader-ring shrink-0"></div>
+                  <div class="min-w-0">
+                    <h4 id="loading-title" class="font-display font-bold text-base sm:text-lg text-white truncate">Analizando…</h4>
+                    <p id="loading-subtitle" class="text-xs text-avj-300">Leyendo cabeceras del archivo</p>
+                  </div>
+                </div>
+                <span id="loading-percent-badge" class="font-mono font-bold text-lg text-avj-400">0%</span>
+              </div>
+              <div class="space-y-1.5">
+                <div class="flex justify-between text-[11px] font-mono text-zinc-400">
+                  <span id="telemetry-bytes-read">0 KB leídos</span>
+                  <span id="telemetry-read-speed" class="text-emerald-400"></span>
+                </div>
+                <div class="w-full h-3 bg-zinc-900 border border-zinc-800 rounded-full overflow-hidden p-0.5">
+                  <div id="loading-bar" class="h-full bg-gradient-to-r from-avj-600 via-purple-500 to-indigo-400 rounded-full transition-all duration-150" style="width:0%"></div>
+                </div>
+              </div>
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                <div class="p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800"><span class="text-[10px] text-zinc-400 block">Formato</span><span id="meta-fs-type" class="font-mono font-semibold text-white truncate block">—</span></div>
+                <div class="p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800"><span class="text-[10px] text-zinc-400 block">ID / Ejecutable</span><span id="meta-game-id" class="font-mono font-semibold text-avj-300 truncate block">—</span></div>
+                <div class="p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800"><span class="text-[10px] text-zinc-400 block">Volumen / Título</span><span id="meta-volume" class="font-mono font-semibold text-emerald-400 truncate block">—</span></div>
+                <div class="p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800"><span id="meta-crc-label" class="text-[10px] text-zinc-400 block">CRC-32</span><span id="meta-crc-hash" class="font-mono font-semibold text-purple-300 truncate block">—</span></div>
+              </div>
+              <div id="system-cnf-box" class="hidden bg-zinc-900/90 border border-avj-500/40 rounded-xl p-3 space-y-1">
+                <div class="flex items-center justify-between text-[11px]">
+                  <span class="font-semibold text-avj-300"><i class="fa-solid fa-file-code mr-1"></i> SYSTEM.CNF de tu disco</span>
+                  <span id="system-cnf-offset" class="font-mono text-zinc-400"></span>
+                </div>
+                <pre id="system-cnf-raw" class="font-mono text-[11px] text-emerald-300 bg-black/80 p-2 rounded-lg overflow-x-auto whitespace-pre-wrap"></pre>
+              </div>
+              <div class="bg-black/95 border border-zinc-800 rounded-xl p-3 font-mono text-[11px] h-28 overflow-y-auto space-y-1" id="iso-realtime-log"></div>
+
+              <!-- Acciones (PS2 / aviso / error) -->
+              <div id="launch-actions" class="hidden pt-3 border-t border-zinc-800 space-y-3">
+                <p id="launch-warning-text" class="text-xs text-amber-300 leading-relaxed"></p>
+                <div class="flex flex-wrap items-center gap-2">
+                  <button id="btn-force-boot" data-action="force-boot" class="hidden px-4 py-2 rounded-xl bg-avj-600 hover:bg-avj-500 text-white text-xs font-bold shadow-lg shadow-avj-600/30 transition-all"><i class="fa-solid fa-play mr-1"></i> Intentar arrancar igualmente</button>
+                  <button id="btn-open-play" data-action="open-play" class="hidden px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all"><i class="fa-solid fa-arrow-up-right-from-square mr-1"></i> Plan B: abrir Play! web oficial</button>
+                  <button data-action="download-headers" class="px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-xs font-semibold transition-all"><i class="fa-solid fa-server mr-1"></i> Descargar _headers</button>
+                  <button data-action="reset" class="px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-xs font-semibold transition-all"><i class="fa-solid fa-arrow-left mr-1"></i> Volver</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- VISTA 3: Emulador -->
+          <div id="tech-log" class="hidden absolute inset-x-0 bottom-0 z-20 max-h-48 overflow-y-auto bg-black/90 border-t border-avj-500/40 p-3 font-mono text-[11px] space-y-0.5"></div>
+          <div id="active-emulator-container" class="hidden absolute inset-0 w-full h-full bg-black"></div>
+        </div>
+
+        <div class="bg-zinc-900/90 px-4 py-2.5 border-t border-zinc-800 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-400">
+          <div class="flex items-center gap-4 flex-wrap">
+            <span class="flex items-center gap-1.5"><kbd class="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px] text-zinc-200">Enter</kbd> Start</span>
+            <span class="flex items-center gap-1.5"><kbd class="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px] text-zinc-200">Shift</kbd> Select</span>
+            <span class="flex items-center gap-1.5"><kbd class="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px] text-zinc-200">Z X A S</kbd> Acción</span>
+          </div>
+          <span class="text-[11px]">Controles configurables en el menú ⚙ del emulador</span>
+        </div>
+      </div>
+
+      <!-- RECIENTES -->
+      <div class="glass-panel rounded-3xl p-5 border border-zinc-800/90 space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2.5">
+            <div class="w-9 h-9 rounded-xl bg-avj-500/15 border border-avj-500/30 flex items-center justify-center text-avj-400"><i class="fa-solid fa-clock-rotate-left"></i></div>
+            <div>
+              <h3 class="font-display font-bold text-sm text-white">Juegos recientes</h3>
+              <p id="storage-estimate" class="text-[11px] text-zinc-400">Se guardan en tu navegador para jugar con un clic</p>
+            </div>
+          </div>
+          <button data-action="clear-library" class="text-[11px] text-zinc-400 hover:text-red-300 px-2 py-1 rounded-lg hover:bg-red-950/40 transition-all"><i class="fa-solid fa-broom mr-1"></i>Vaciar</button>
+        </div>
+        <div id="library-list" class="grid grid-cols-1 sm:grid-cols-2 gap-2"></div>
+      </div>
+    </div>
+
+    <!-- COLUMNA LATERAL -->
+    <div class="lg:col-span-4 space-y-5">
+
+      <!-- BIOS -->
+      <div class="glass-panel rounded-3xl p-5 border border-zinc-800/90 space-y-4">
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2.5">
+            <div class="w-9 h-9 rounded-xl bg-avj-500/15 border border-avj-500/30 flex items-center justify-center text-avj-400"><i class="fa-solid fa-memory"></i></div>
+            <div>
+              <h3 class="font-display font-bold text-sm text-white">BIOS de PS1</h3>
+              <p class="text-[11px] text-zinc-400">Opcional (scph1001.bin, scph5501.bin…)</p>
+            </div>
+          </div>
+          <span id="bios-status-badge" class="text-[10px] font-bold px-2.5 py-1 rounded-full bg-zinc-800 text-zinc-300 border border-zinc-700 whitespace-nowrap">Sin BIOS</span>
+        </div>
+        <p class="text-xs text-zinc-400 leading-relaxed">El núcleo de PS1 funciona sin BIOS, pero con la tuya mejora la compatibilidad. Queda guardada en tu navegador.</p>
+        <div id="bios-saved-info" class="hidden p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/30 flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2 overflow-hidden">
+            <i class="fa-solid fa-circle-check text-emerald-400 text-sm"></i>
+            <div class="truncate">
+              <p id="bios-filename" class="text-xs font-semibold text-emerald-200 truncate"></p>
+              <p id="bios-filesize" class="text-[10px] text-emerald-400/80"></p>
+            </div>
+          </div>
+          <button data-action="clear-bios" class="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded-lg hover:bg-red-950/50 transition-all" title="Eliminar BIOS"><i class="fa-solid fa-trash-can"></i></button>
+        </div>
+        <label for="bios-file-input" class="w-full py-2.5 px-3 rounded-xl bg-zinc-800 hover:bg-avj-600/30 hover:border-avj-500/50 border border-zinc-700 text-xs font-semibold text-center text-zinc-200 cursor-pointer transition-all flex items-center justify-center gap-2">
+          <i class="fa-solid fa-upload text-avj-400"></i><span id="bios-btn-text">Subir BIOS</span>
+        </label>
+        <input type="file" id="bios-file-input" class="hidden">
+      </div>
+
+      <!-- PARTIDAS -->
+      <div class="glass-panel rounded-3xl p-5 border border-zinc-800/90 space-y-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2.5">
+            <div class="w-9 h-9 rounded-xl bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400"><i class="fa-solid fa-sd-card"></i></div>
+            <div>
+              <h3 class="font-display font-bold text-sm text-white">Partidas guardadas</h3>
+              <p class="text-[11px] text-zinc-400">Estados y saves (.state / .srm)</p>
+            </div>
+          </div>
+          <button data-action="refresh-saves" class="p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition-all" title="Actualizar"><i class="fa-solid fa-rotate"></i></button>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <label for="import-save-input" class="py-2 px-3 rounded-xl bg-avj-600/20 hover:bg-avj-600/30 border border-avj-500/30 text-avj-200 text-xs font-semibold text-center cursor-pointer transition-all flex items-center justify-center gap-1.5">
+            <i class="fa-solid fa-file-import"></i> Importar
+          </label>
+          <input type="file" id="import-save-input" class="hidden" multiple>
+          <button data-action="export-latest" class="py-2 px-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-xs font-semibold transition-all flex items-center justify-center gap-1.5">
+            <i class="fa-solid fa-download text-avj-400"></i> Exportar último
+          </button>
+        </div>
+        <div id="saves-list-container" class="space-y-2 max-h-72 overflow-y-auto pr-1"></div>
+      </div>
+
+      <!-- DIAGNÓSTICO -->
+      <div class="glass-panel rounded-3xl p-4 border border-zinc-800/90 space-y-2.5 text-xs">
+        <div class="flex items-center justify-between">
+          <span class="font-display font-bold text-white flex items-center gap-1.5"><i class="fa-solid fa-shield-halved text-avj-400"></i> Multihilo (SharedArrayBuffer)</span>
+          <span id="diag-isolated-bool" class="font-mono text-[11px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">false</span>
+        </div>
+        <p class="text-[11px] text-zinc-400 leading-relaxed">PS1, N64, GBA y SNES funcionan en cualquier hosting. <strong>PSP</strong> necesita las cabeceras COOP/COEP para multihilo. Descarga el archivo y súbelo junto a tu <code class="text-avj-300">index.html</code> (Netlify / Cloudflare Pages).</p>
+        <button data-action="download-headers" class="w-full py-2 px-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-avj-300 font-semibold text-xs transition-all flex items-center justify-center gap-2">
+          <i class="fa-solid fa-file-arrow-down"></i> Descargar <code class="text-white">_headers</code>
+        </button>
+      </div>
+
+      <!-- Banner comunidad -->
+      <div class="rounded-3xl p-4 bg-gradient-to-br from-avj-900/60 via-zinc-900 to-zinc-950 border border-avj-500/30 flex items-center justify-between gap-3">
+        <div class="space-y-1">
+          <span class="text-[10px] font-bold uppercase tracking-widest text-avj-300">AVJ COMUNITY</span>
+          <h4 class="text-xs font-bold text-white">¿Te gusta nuestro emulador web?</h4>
+          <p class="text-[11px] text-zinc-400">Únete al canal oficial para más herramientas gratuitas.</p>
+        </div>
+        <button data-action="open-modal" class="shrink-0 px-3.5 py-2 rounded-xl bg-white text-zinc-950 hover:bg-avj-100 font-bold text-xs transition-all">Unirme</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="mt-auto border-t border-zinc-900 bg-zinc-950/80 py-5 px-4 text-xs text-zinc-500 relative z-10">
+  <div class="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+    <div class="flex items-center gap-2">
+      <span class="font-display font-bold text-zinc-300">AVJ RetroPlay</span><span>•</span>
+      <span>Desarrollado por <strong class="text-avj-400">AVJ COMUNITY</strong></span>
+    </div>
+    <div class="flex items-center gap-4">
+      <span>100% Client-Side WebAssembly</span>
+      <a href="https://whatsapp.com/channel/0029Vb85FCMEAKWEOcpGEW2z" target="_blank" rel="noopener noreferrer" class="text-emerald-400 hover:underline flex items-center gap-1"><i class="fa-brands fa-whatsapp"></i> Canal Oficial WhatsApp</a>
+    </div>
+  </div>
+</footer>
+
+<!-- MODAL COMUNIDAD -->
+<div id="community-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+  <div class="relative w-full max-w-md rounded-3xl glass-panel border border-avj-500/40 p-6 text-center purple-glow space-y-5">
+    <button data-action="close-modal" class="absolute top-4 right-4 w-8 h-8 rounded-full bg-zinc-800/80 hover:bg-zinc-700 text-zinc-400 hover:text-white flex items-center justify-center transition-all"><i class="fa-solid fa-xmark"></i></button>
+    <div class="w-16 h-16 rounded-2xl bg-gradient-to-tr from-avj-600 to-purple-500 mx-auto flex items-center justify-center shadow-lg shadow-avj-600/40"><i class="fa-solid fa-heart text-2xl text-white"></i></div>
+    <div class="space-y-2">
+      <span class="text-[11px] font-bold uppercase tracking-widest px-3 py-1 rounded-full bg-avj-500/20 text-avj-300 border border-avj-500/30">AVJ COMUNITY</span>
+      <h3 class="font-display font-bold text-xl text-white pt-1">¡Gracias por usar nuestra herramienta de AVJ!</h3>
+      <p class="text-xs sm:text-sm text-zinc-300 leading-relaxed">Síguenos en Instagram o únete a nuestro canal de WhatsApp para más herramientas, emuladores y novedades.</p>
+    </div>
+    <div class="space-y-2.5 pt-1">
+      <a href="https://whatsapp.com/channel/0029Vb85FCMEAKWEOcpGEW2z" target="_blank" rel="noopener noreferrer" class="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm flex items-center justify-center gap-2 transition-all"><i class="fa-brands fa-whatsapp text-lg"></i><span>Unirse al Canal de WhatsApp</span></a>
+      <a href="https://instagram.com" target="_blank" rel="noopener noreferrer" class="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-purple-600 via-pink-600 to-amber-500 hover:opacity-95 text-white font-semibold text-sm flex items-center justify-center gap-2 transition-all"><i class="fa-brands fa-instagram text-lg"></i><span>Síguenos en Instagram (@AVJ)</span></a>
+    </div>
+    <button data-action="close-modal" class="text-xs text-zinc-400 hover:text-white underline pt-1">Continuar jugando en AVJ RetroPlay</button>
+  </div>
+</div>
+
+<div id="toast-container" class="fixed bottom-5 right-5 z-[70] flex flex-col gap-2 max-w-sm w-full pointer-events-none px-4 sm:px-0"></div>
+
+<script>
+(() => {
+'use strict';
+
+/* ============================================================
+ * 1. CONFIGURACIÓN
+ * ============================================================ */
+const CONSOLES = {
+  psx:  { name:'PlayStation 1', short:'PS1',  core:'psx',  badge:'pcsx_rearmed', exts:['bin','iso','cue','chd','pbp','img','zip','7z'], icon:'fa-brands fa-playstation', color:'text-avj-300',    iconBg:'bg-avj-600/30 border-avj-400/40',      tag:'emerald' },
+  ps2:  { name:'PlayStation 2', short:'PS2',  core:null,   badge:'play! web',    exts:['iso','bin','elf','chd','cso','gz'],            icon:'fa-brands fa-playstation', color:'text-indigo-400', iconBg:'bg-indigo-950/80 border-indigo-500/40', tag:'amber', inpage:true },
+  psp:  { name:'PSP',           short:'PSP',  core:'psp',  badge:'ppsspp',       exts:['iso','cso','pbp'],                              icon:'fa-solid fa-mobile-screen-button', color:'text-purple-400', iconBg:'bg-zinc-800 border-zinc-700', tag:'amber', needsThreads:true },
+  n64:  { name:'Nintendo 64',   short:'N64',  core:'n64',  badge:'mupen64plus',  exts:['z64','n64','v64','zip','7z'],                   icon:'fa-solid fa-cube',         color:'text-red-400',    iconBg:'bg-zinc-800 border-zinc-700',           tag:'emerald' },
+  gba:  { name:'Game Boy Advance', short:'GBA', core:'gba', badge:'mgba',        exts:['gba','zip','7z'],                               icon:'fa-solid fa-gamepad',      color:'text-violet-400', iconBg:'bg-zinc-800 border-zinc-700',           tag:'emerald' },
+  snes: { name:'Super Nintendo',short:'SNES', core:'snes', badge:'snes9x',       exts:['sfc','smc','zip','7z'],                         icon:'fa-solid fa-compact-disc', color:'text-pink-400',   iconBg:'bg-zinc-800 border-zinc-700',           tag:'emerald' }
+};
+const SAVE_EXTS = ['srm','state','sav','mcd','mcr','ps2','vmc','psu','ss0','ss1','ss2','ss3'];
+const ALL_ROM_EXTS = [...new Set(Object.values(CONSOLES).flatMap(c => c.exts).concat(['cue']))];
+const LIB_MAX_BYTES = 300 * 1024 * 1024;   // ROMs ≤ 300 MB se guardan en "recientes"
+const EJS_PATH = 'https://cdn.emulatorjs.org/stable/data/';
+const PLAY_WEB_URL = 'https://playjs.purei.org/';
+
+const S = {
+  console: 'psx', file: null, blobUrl: null, biosUrl: null, stateUrl: null,
+  biosBlob: null, biosName: null, pendingState: null, meta: null,
+  ps2: { ok: false, reason: '' }, ps2run: null, db: null, libId: null, startedAt: 0, timer: null, running: false, welcomed: false
+};
+
+/* ============================================================
+ * 2. UTILIDADES
+ * ============================================================ */
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const extOf = (name) => (name.includes('.') ? name.split('.').pop().toLowerCase() : '');
+const baseName = (name) => name.replace(/\.[^/.]+$/, '');
+const fmtBytes = (b) => b >= 1073741824 ? (b/1073741824).toFixed(2)+' GB' : b >= 1048576 ? (b/1048576).toFixed(1)+' MB' : Math.max(1, Math.round(b/1024))+' KB';
+const fmtDur = (ms) => { const s = Math.floor(ms/1000), h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60; return h ? `${h}h ${String(m).padStart(2,'0')}m` : `${m}:${String(x).padStart(2,'0')}`; };
+const fmtDate = (t) => new Date(t).toLocaleString([], { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function toast(msg, type = 'info') {
+  const icons = { success:'fa-circle-check text-emerald-400', error:'fa-triangle-exclamation text-red-400', warn:'fa-triangle-exclamation text-amber-400', info:'fa-circle-info text-avj-400' };
+  const el = document.createElement('div');
+  el.className = 'toast pointer-events-auto glass-panel border border-avj-500/40 rounded-2xl p-3.5 shadow-xl flex items-center gap-3 text-xs text-white transition-opacity duration-300';
+  el.innerHTML = `<i class="fa-solid ${icons[type] || icons.info} text-base shrink-0"></i><span class="flex-1 font-medium">${esc(msg)}</span>`;
+  $('toast-container').appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 320); }, type === 'error' ? 6500 : 4000);
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crcUpdate(crc, bytes) { for (let i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8); return crc >>> 0; }
+const hex = (n, w = 8) => '0x' + (n >>> 0).toString(16).toUpperCase().padStart(w, '0');
+
+/* ============================================================
+ * 3. INDEXEDDB
+ * ============================================================ */
+function initDB() {
+  return new Promise((resolve) => {
+    if (!('indexedDB' in window)) { resolve(null); return; }
+    let req;
+    try { req = indexedDB.open('AVJ_RetroPlay_DB_v3', 1); } catch (e) { resolve(null); return; }
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      ['bios_store', 'saves_store', 'library_store'].forEach(n => { if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: 'id' }); });
+    };
+    req.onsuccess = (e) => { S.db = e.target.result; resolve(S.db); };
+    req.onerror = () => resolve(null);
+    req.onblocked = () => resolve(null);
+  });
+}
+function dbDo(store, mode, fn) {
+  return new Promise((resolve, reject) => {
+    if (!S.db) { reject(new Error('IndexedDB no disponible (¿modo privado?)')); return; }
+    const t = S.db.transaction(store, mode);
+    let r; try { r = fn(t.objectStore(store)); } catch (e) { reject(e); return; }
+    t.oncomplete = () => resolve(r ? r.result : undefined);
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error || new Error('Transacción abortada'));
+  });
+}
+const dbPut = (s, v) => dbDo(s, 'readwrite', st => st.put(v));
+const dbGet = (s, k) => dbDo(s, 'readonly', st => st.get(k));
+const dbAll = (s) => dbDo(s, 'readonly', st => st.getAll());
+const dbDel = (s, k) => dbDo(s, 'readwrite', st => st.delete(k));
+const dbClear = (s) => dbDo(s, 'readwrite', st => st.clear());
+
+async function updateStorageEstimate() {
+  try {
+    if (navigator.storage && navigator.storage.estimate) {
+      const { usage, quota } = await navigator.storage.estimate();
+      $('storage-estimate').textContent = `Usando ${fmtBytes(usage || 0)} de ${fmtBytes(quota || 0)} disponibles en tu navegador`;
+    }
+  } catch (e) { /* ignorar */ }
+}
+
+/* ============================================================
+ * 4. BIOS
+ * ============================================================ */
+async function handleBios(file) {
+  if (!file) return;
+  if (file.size > 1024 * 1024) {   // BIOS de PS2 (4 MB): Play! no la necesita, no se mezcla con la de PS1
+    try { await dbPut('bios_store', { id: 'bios_ps2', name: file.name, size: file.size, blob: file, ts: Date.now() }); } catch (e) { /* ignorar */ }
+    toast(`"${file.name}" parece una BIOS de PS2 (${fmtBytes(file.size)}). Play! no la necesita (emula la BIOS por software); queda guardada y no afecta a PS1.`, 'info');
+    return;
+  }
+  if (file.size < 64 * 1024 || file.size > 8 * 1024 * 1024) { toast('Ese archivo no parece una BIOS (tamaño inusual).', 'warn'); }
+  try {
+    const rec = { id: 'bios_psx', name: file.name, size: file.size, blob: file, ts: Date.now() };
+    await dbPut('bios_store', rec);
+    S.biosBlob = file; S.biosName = file.name;
+    renderBios(rec);
+    toast(`BIOS "${file.name}" guardada en tu navegador`, 'success');
+  } catch (e) { S.biosBlob = file; S.biosName = file.name; renderBios({ name: file.name, size: file.size }); toast('BIOS cargada para esta sesión (no se pudo persistir).', 'warn'); }
+}
+async function loadBios() {
+  try {
+    const rec = await dbGet('bios_store', 'bios_psx');
+    if (rec) { S.biosBlob = rec.blob; S.biosName = rec.name; renderBios(rec); }
+  } catch (e) { /* sin BIOS */ }
+}
+function renderBios(rec) {
+  $('bios-saved-info').classList.remove('hidden');
+  $('bios-filename').textContent = rec.name;
+  $('bios-filesize').textContent = `${fmtBytes(rec.size)} • Lista para PS1`;
+  const b = $('bios-status-badge');
+  b.textContent = 'BIOS cargada';
+  b.className = 'text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 whitespace-nowrap';
+  $('bios-btn-text').textContent = 'Reemplazar BIOS';
+}
+async function clearBios() {
+  try { await dbDel('bios_store', 'bios_psx'); } catch (e) { /* ignorar */ }
+  S.biosBlob = null; S.biosName = null;
+  $('bios-saved-info').classList.add('hidden');
+  const b = $('bios-status-badge');
+  b.textContent = 'Sin BIOS';
+  b.className = 'text-[10px] font-bold px-2.5 py-1 rounded-full bg-zinc-800 text-zinc-300 border border-zinc-700 whitespace-nowrap';
+  $('bios-btn-text').textContent = 'Subir BIOS';
+  toast('BIOS eliminada', 'info');
+}
+
+/* ============================================================
+ * 5. PARTIDAS GUARDADAS
+ * ============================================================ */
+async function saveBlob(data, title, consoleKey, kind, game) {
+  const blob = data instanceof Blob ? data : new Blob([data], { type: 'application/octet-stream' });
+  const rec = { id: 'sv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), title, console: consoleKey || S.console, kind: kind || 'state', game: game || '', size: blob.size, updatedAt: Date.now(), blob };
+  await dbPut('saves_store', rec);
+  await renderSaves();
+  updateStorageEstimate();
+  return rec;
+}
+async function renderSaves() {
+  const box = $('saves-list-container');
+  let saves = [];
+  try { saves = await dbAll('saves_store'); } catch (e) { /* vacío */ }
+  box.innerHTML = '';
+  if (!saves.length) {
+    box.innerHTML = `<div class="p-4 rounded-2xl bg-zinc-900/50 border border-zinc-800/80 text-center space-y-1"><p class="text-xs font-medium text-zinc-400">Sin partidas todavía</p><p class="text-[11px] text-zinc-500">Usa <strong>Guardar</strong> mientras juegas o importa un <code class="text-avj-300">.state / .srm</code>.</p></div>`;
+    return;
+  }
+  saves.sort((a, b) => b.updatedAt - a.updatedAt).forEach(sv => {
+    const el = document.createElement('div');
+    el.className = 'p-3 rounded-2xl bg-zinc-900/90 border border-zinc-800 hover:border-avj-500/40 flex items-center justify-between gap-2 transition-all';
+    el.innerHTML = `
+      <div class="flex items-center gap-2.5 overflow-hidden">
+        <div class="w-10 h-8 rounded-lg bg-avj-600/20 border border-avj-500/30 text-avj-300 flex items-center justify-center shrink-0 text-[10px] font-bold">${esc((CONSOLES[sv.console]?.short) || sv.console || 'ROM')}</div>
+        <div class="truncate"><p class="text-xs font-semibold text-white truncate">${esc(sv.title)}</p><p class="text-[10px] text-zinc-400">${fmtBytes(sv.size)} • ${fmtDate(sv.updatedAt)}</p></div>
+      </div>
+      <div class="flex items-center gap-1 shrink-0">
+        ${sv.kind === 'state' ? `<button data-action="apply-save" data-id="${esc(sv.id)}" class="p-1.5 px-2 rounded-lg bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white text-xs transition-all" title="Cargar este estado"><i class="fa-solid fa-play"></i></button>` : ''}
+        <button data-action="download-save" data-id="${esc(sv.id)}" class="p-1.5 px-2 rounded-lg bg-avj-600/20 hover:bg-avj-600 text-avj-300 hover:text-white text-xs transition-all" title="Descargar"><i class="fa-solid fa-download"></i></button>
+        <button data-action="delete-save" data-id="${esc(sv.id)}" class="p-1.5 px-2 rounded-lg bg-zinc-800 hover:bg-red-950/60 text-zinc-400 hover:text-red-300 text-xs transition-all" title="Eliminar"><i class="fa-solid fa-trash"></i></button>
+      </div>`;
+    box.appendChild(el);
+  });
+}
+async function importSaves(files) {
+  let n = 0;
+  for (const f of files) {
+    const ext = extOf(f.name);
+    const consoleKey = ['ps2','vmc','psu'].includes(ext) ? 'ps2' : S.console;
+    const kind = (ext === 'state' || /^ss\d$/.test(ext)) ? 'state' : 'srm';
+    try { await saveBlob(f, f.name, consoleKey, kind, S.file ? baseName(S.file.name) : baseName(f.name)); n++; }
+    catch (e) { toast(`No se pudo importar ${f.name}: ${e.message}`, 'error'); }
+  }
+  if (n) toast(`${n} archivo(s) de guardado importado(s)`, 'success');
+}
+async function downloadSave(id) {
+  try { const r = await dbGet('saves_store', id); if (r) { downloadBlob(r.blob, r.title); toast(`Descargando "${r.title}"`, 'info'); } } catch (e) { toast(e.message, 'error'); }
+}
+async function deleteSave(id) { try { await dbDel('saves_store', id); await renderSaves(); updateStorageEstimate(); toast('Partida eliminada', 'info'); } catch (e) { toast(e.message, 'error'); } }
+async function exportLatest() {
+  try {
+    const all = await dbAll('saves_store');
+    if (!all.length) { toast('No hay partidas para exportar todavía', 'info'); return; }
+    const pick = all.filter(s => s.console === S.console).sort((a, b) => b.updatedAt - a.updatedAt)[0] || all.sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    downloadBlob(pick.blob, pick.title); toast(`Descargando "${pick.title}"`, 'info');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function getEmu() { try { return $('emu-frame')?.contentWindow?.EJS_emulator || null; } catch (e) { return null; } }
+
+async function applySave(id) {
+  let rec; try { rec = await dbGet('saves_store', id); } catch (e) { toast(e.message, 'error'); return; }
+  if (!rec) return;
+  if (S.running) {
+    const emu = getEmu();
+    try {
+      const buf = new Uint8Array(await rec.blob.arrayBuffer());
+      if (emu && emu.gameManager && typeof emu.gameManager.loadState === 'function') { emu.gameManager.loadState(buf); toast(`Estado "${rec.title}" cargado`, 'success'); return; }
+    } catch (e) { /* caer al reinicio */ }
+  }
+  if (S.file) { S.pendingState = rec.blob; toast('Reiniciando el juego con ese estado…', 'info'); bootEmulator(); }
+  else toast('Primero carga el juego al que pertenece este estado.', 'warn');
+}
+async function quickSave() {
+  const emu = getEmu();
+  try {
+    const st = emu && emu.gameManager && emu.gameManager.getState ? emu.gameManager.getState() : null;
+    if (!st || !st.length) throw new Error('El emulador aún no está listo');
+    await saveBlob(new Blob([st]), `${baseName(S.file.name)}.state`, S.console, 'state', baseName(S.file.name));
+    toast('Estado guardado en tu navegador', 'success');
+  } catch (e) { toast('Guardado rápido no disponible aquí. Usa el menú ⚙ del emulador (Guardar estado).', 'warn'); }
+}
+async function quickLoad() {
+  try {
+    const all = (await dbAll('saves_store')).filter(s => s.kind === 'state' && S.file && s.game === baseName(S.file.name)).sort((a, b) => b.updatedAt - a.updatedAt);
+    if (!all.length) { toast('No hay estados guardados para este juego', 'info'); return; }
+    await applySave(all[0].id);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+/* ============================================================
+ * 6. BIBLIOTECA / RECIENTES
+ * ============================================================ */
+async function addToLibrary(file) {
+  const id = `${file.name}|${file.size}`;
+  S.libId = id;
+  try {
+    const prev = await dbGet('library_store', id);
+    const rec = prev || { id, name: file.name, size: file.size, addedAt: Date.now(), playMs: 0, blob: null };
+    rec.console = S.console; rec.lastPlayed = Date.now();
+    if (!rec.blob && file.size <= LIB_MAX_BYTES) rec.blob = file;
+    await dbPut('library_store', rec);
+  } catch (e) { /* cuota o sin DB: seguir sin biblioteca */ }
+  renderLibrary(); updateStorageEstimate();
+}
+async function renderLibrary() {
+  const box = $('library-list');
+  let items = []; try { items = await dbAll('library_store'); } catch (e) { /* vacío */ }
+  items.sort((a, b) => b.lastPlayed - a.lastPlayed);
+  box.innerHTML = '';
+  if (!items.length) { box.innerHTML = `<p class="sm:col-span-2 text-center text-[11px] text-zinc-500 py-3">Aquí aparecerán los juegos que cargues (hasta ${fmtBytes(LIB_MAX_BYTES)} por archivo).</p>`; return; }
+  items.slice(0, 12).forEach(it => {
+    const c = CONSOLES[it.console] || CONSOLES.psx;
+    const el = document.createElement('div');
+    el.className = 'p-3 rounded-2xl bg-zinc-900/90 border border-zinc-800 hover:border-avj-500/40 flex items-center justify-between gap-2 transition-all';
+    el.innerHTML = `
+      <button data-action="play-library" data-id="${esc(it.id)}" class="flex items-center gap-2.5 overflow-hidden text-left flex-1 min-w-0">
+        <div class="w-10 h-9 rounded-lg ${c.iconBg} border flex items-center justify-center shrink-0 ${c.color}"><i class="${c.icon} text-sm"></i></div>
+        <div class="truncate"><p class="text-xs font-semibold text-white truncate">${esc(baseName(it.name))}</p>
+        <p class="text-[10px] text-zinc-400">${c.short} • ${fmtBytes(it.size)} • ${it.playMs ? fmtDur(it.playMs) + ' jugados' : 'sin jugar'}${it.blob ? '' : ' • re-seleccionar'}</p></div>
+      </button>
+      <button data-action="delete-library" data-id="${esc(it.id)}" class="p-1.5 px-2 rounded-lg bg-zinc-800 hover:bg-red-950/60 text-zinc-400 hover:text-red-300 text-xs transition-all shrink-0" title="Quitar"><i class="fa-solid fa-xmark"></i></button>`;
+    box.appendChild(el);
+  });
+}
+async function playFromLibrary(id) {
+  try {
+    const it = await dbGet('library_store', id);
+    if (!it) return;
+    if (it.blob) { setConsole(it.console, true); launchFile(new File([it.blob], it.name, { type: 'application/octet-stream' })); }
+    else { setConsole(it.console, true); toast(`"${it.name}" es muy grande para guardarse. Selecciónalo de nuevo.`, 'info'); $('rom-file-input').click(); }
+  } catch (e) { toast(e.message, 'error'); }
+}
+async function flushPlaytime() {
+  if (!S.startedAt || !S.libId) { S.startedAt = 0; return; }
+  const elapsed = Date.now() - S.startedAt; S.startedAt = 0;
+  try { const rec = await dbGet('library_store', S.libId); if (rec) { rec.playMs = (rec.playMs || 0) + elapsed; await dbPut('library_store', rec); renderLibrary(); } } catch (e) { /* ignorar */ }
+}
+
+/* ============================================================
+ * 7. CONSOLAS (UI)
+ * ============================================================ */
+function buildConsoleCards() {
+  const grid = $('console-selector');
+  grid.innerHTML = Object.entries(CONSOLES).map(([key, c]) => `
+    <button data-action="select-console" data-console="${key}" class="console-card group relative p-3.5 rounded-2xl glass-panel text-left flex flex-col justify-between">
+      <div class="flex items-center justify-between w-full mb-2 gap-1">
+        <span class="w-8 h-8 rounded-lg ${c.iconBg} border flex items-center justify-center ${c.color} group-hover:scale-110 transition-transform"><i class="${c.icon} text-sm"></i></span>
+        <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-${c.tag}-500/20 text-${c.tag}-300 border border-${c.tag}-500/30 truncate">${c.badge}</span>
+      </div>
+      <div><h3 class="font-display font-bold text-white text-sm">${c.name}</h3><p class="text-[11px] text-zinc-400 truncate">${c.exts.filter(e => !['zip','7z'].includes(e)).map(e => '.' + e).join(', ')}</p></div>
+    </button>`).join('');
+}
+function setConsole(key, silent) {
+  if (!CONSOLES[key]) return;
+  S.console = key;
+  const c = CONSOLES[key];
+  document.querySelectorAll('.console-card').forEach(el => el.classList.toggle('is-active', el.dataset.console === key));
+  $('selected-core-badge').textContent = c.inpage ? 'Core Wasm: Play! (PS2)' : `Core Wasm: ${c.core}`;
+  $('dropzone-formats-highlight').textContent = c.exts.filter(e => !['zip','7z'].includes(e)).map(e => '.' + e.toUpperCase()).join(', ');
+  $('ps2-badge-banner').classList.toggle('hidden', key !== 'ps2');
+  $('upload-btn-main-label').textContent = `Cargar juego de ${c.short}`;
+  try { localStorage.setItem('avj_console', key); } catch (e) { /* ignorar */ }
+  if (!silent) resetViewport();
+}
+
+/* ============================================================
+ * 8. ANÁLISIS BINARIO DEL ARCHIVO
+ * ============================================================ */
+const logLine = (t, cls = 'text-emerald-400') => { const l = $('iso-realtime-log'); const d = document.createElement('div'); d.className = cls; d.textContent = t; l.appendChild(d); l.scrollTop = l.scrollHeight; };
+function techLog(t, cls = 'text-emerald-300') {
+  logLine(t, cls);
+  const box = $('tech-log'); if (!box) return;
+  const d = document.createElement('div'); d.className = cls; d.textContent = t; box.appendChild(d);
+  while (box.childElementCount > 300) box.firstChild.remove();
+  box.scrollTop = box.scrollHeight;
+}
+const ascii = (b, from, len) => { let s = ''; for (let i = from; i < from + len && i < b.length; i++) { const c = b[i]; if (c >= 32 && c <= 126) s += String.fromCharCode(c); } return s.trim(); };
+
+async function analyzeFile(file) {
+  const total = file.size, ext = extOf(file.name);
+  const info = { format: ext.toUpperCase() + ' binario', id: '—', volume: '—', crc: '—', crcNote: 'CRC-32', cnf: null, cnfOffset: 0, isPS2: false, isPSP: false, isPS1: false, isDisc: false };
+
+  ['meta-fs-type','meta-game-id','meta-volume','meta-crc-hash'].forEach(i => $(i).textContent = '…');
+  $('system-cnf-box').classList.add('hidden');
+  $('iso-realtime-log').innerHTML = '';
+  logLine(`[ARCHIVO] "${file.name}" • ${total.toLocaleString()} bytes (${fmtBytes(total)})`, 'text-avj-300');
+
+  const head = new Uint8Array(await file.slice(0, Math.min(total, 0x10000)).arrayBuffer());
+  const dv = new DataView(head.buffer);
+
+  // Firmas conocidas
+  if (head.length > 4 && head[0] === 0x7F && head[1] === 0x45 && head[2] === 0x4C && head[3] === 0x46) {
+    info.format = 'ELF (MIPS)'; info.id = file.name; info.isPS2 = true; logLine('[ELF] Cabecera 0x7F454C46 válida', 'text-emerald-400');
+  }
+  if (ext === 'gba' && head.length > 0xB0) {
+    info.format = 'GBA ROM'; info.volume = ascii(head, 0xA0, 12) || '—'; info.id = ascii(head, 0xAC, 4) || '—';
+    logLine(`[GBA] Título "${info.volume}" • Código ${info.id}`, 'text-emerald-400');
+  }
+  if (['z64','n64','v64'].includes(ext) && head.length > 0x40) {
+    const m = dv.getUint32(0, false);
+    const fmt = m === 0x80371240 ? 'N64 Z64 (big-endian)' : m === 0x37804012 ? 'N64 V64 (byte-swap)' : m === 0x40123780 ? 'N64 N64 (little-endian)' : 'N64 ROM';
+    info.format = fmt;
+    if (m === 0x80371240) { info.volume = ascii(head, 0x20, 20) || '—'; info.id = ascii(head, 0x3B, 4) || '—'; }
+    logLine(`[N64] ${fmt} • magia ${hex(m)}`, 'text-emerald-400');
+  }
+  if (['sfc','smc'].includes(ext)) {
+    const hdr = total % 1024 === 512 ? 512 : 0;
+    info.format = hdr ? 'SNES ROM (+512B header SMC)' : 'SNES ROM';
+    for (const off of [0x7FC0, 0xFFC0]) { const t = ascii(head.length > off + hdr + 21 ? head : new Uint8Array(await file.slice(off + hdr, off + hdr + 21).arrayBuffer()), head.length > off + hdr + 21 ? off + hdr : 0, 21); if (t.length > 3) { info.volume = t; break; } }
+  }
+  // ISO 9660 (2048 / 2352 modo1 / 2352 modo2)
+  for (const c of [{ sig: 0x8001, lbl: 'ISO 9660 (2048 B/sector)', secs: 2048 }, { sig: 0x9311, lbl: 'RAW Modo 1 (2352 B/sector)', secs: 2352 }, { sig: 0x9319, lbl: 'RAW Modo 2 (2352 B/sector)', secs: 2352 }]) {
+    if (head.length >= c.sig + 40 && String.fromCharCode(head[c.sig], head[c.sig+1], head[c.sig+2], head[c.sig+3], head[c.sig+4]) === 'CD001') {
+      info.format = c.lbl; info.isDisc = true; info.volume = ascii(head, c.sig + 39, 32) || 'SIN_NOMBRE';
+      logLine(`[ISO9660] "CD001" en ${hex(c.sig, 4)} • Volumen "${info.volume}" • ${Math.floor(total / c.secs).toLocaleString()} sectores`, 'text-emerald-400');
+      break;
+    }
+  }
+  if (['chd','cso','pbp'].includes(ext)) { info.format = ext.toUpperCase() + ' (contenedor comprimido)'; info.isDisc = ext !== 'cso'; }
+  if (head.length > 8 && String.fromCharCode(head[0], head[1], head[2], head[3], head[4], head[5], head[6], head[7]) === 'MComprHD') info.format = 'CHD (MAME/Libretro)';
+  if (head.length > 4 && String.fromCharCode(head[0], head[1], head[2], head[3]) === 'CISO') info.format = 'CSO (ISO comprimida)';
+  if (head.length > 4 && head[0] === 0x00 && head[1] === 0x50 && head[2] === 0x42 && head[3] === 0x50) info.format = 'PBP (EBOOT)';
+
+  $('meta-fs-type').textContent = info.format;
+
+  // Escaneo por bloques: discos hasta 8 MB, ROMs hasta 64 MB
+  const scanLimit = Math.min(total, (info.isDisc || ['iso','bin','img'].includes(ext)) ? 8 * 1048576 : 64 * 1048576);
+  const chunk = 1048576, chunks = Math.max(1, Math.ceil(scanLimit / chunk));
+  const dec = new TextDecoder('latin1');
+  let crc = 0xFFFFFFFF, carry = '', scanned = 0;
+  const t0 = performance.now();
+  for (let i = 0; i < chunks; i++) {
+    const buf = new Uint8Array(await file.slice(i * chunk, Math.min(scanLimit, (i + 1) * chunk)).arrayBuffer());
+    scanned += buf.length;
+    crc = crcUpdate(crc, buf);
+    if (!info.cnf || !info.isPSP) {
+      const txt = carry + dec.decode(buf);
+      if (!info.cnf) {
+        const m = txt.match(/BOOT2?\s*=\s*cdrom0?:\\?([^\s;\r\n\0]+)/i);
+        if (m) {
+          const at = txt.indexOf(m[0]); const raw = txt.substr(at, 160).split(/[^\x0A\x0D\x20-\x7E]/)[0].trim();
+          info.cnf = raw; info.cnfOffset = i * chunk + Math.max(0, at - carry.length);
+          info.isPS2 = /BOOT2/i.test(m[0]); info.isPS1 = !info.isPS2;
+          const idm = m[1].match(/([A-Z]{4})[_-]?(\d{3})\.?(\d{2})/i);
+          info.id = idm ? `${idm[1].toUpperCase()}-${idm[2]}${idm[3]}` : m[1];
+          logLine(`[SYSTEM.CNF] ${info.isPS2 ? 'BOOT2' : 'BOOT'} → ${m[1]}  (ID ${info.id})`, 'text-avj-300');
+        }
+      }
+      if (!info.isPSP && txt.includes('PSP_GAME')) { info.isPSP = true; logLine('[PSP] Directorio PSP_GAME encontrado', 'text-avj-300'); }
+      carry = txt.slice(-256);
+    }
+    const pct = Math.round(((i + 1) / chunks) * 100);
+    const sec = Math.max(0.001, (performance.now() - t0) / 1000);
+    $('loading-bar').style.width = pct + '%'; $('loading-percent-badge').textContent = pct + '%';
+    $('telemetry-bytes-read').textContent = `${fmtBytes(scanned)} leídos de ${fmtBytes(total)}`;
+    $('telemetry-read-speed').textContent = `${(scanned / 1048576 / sec).toFixed(0)} MB/s`;
+  }
+  info.crc = hex((crc ^ 0xFFFFFFFF) >>> 0);
+  info.crcNote = scanned < total ? `CRC-32 (primeros ${fmtBytes(scanned)})` : 'CRC-32 (archivo completo)';
+  $('meta-game-id').textContent = info.id; $('meta-volume').textContent = info.volume;
+  $('meta-crc-hash').textContent = info.crc; $('meta-crc-label').textContent = info.crcNote;
+  if (info.cnf) { $('system-cnf-box').classList.remove('hidden'); $('system-cnf-raw').textContent = info.cnf; $('system-cnf-offset').textContent = 'Offset ' + hex(info.cnfOffset, 4); }
+  logLine(`[OK] Análisis completado • ${info.crcNote} ${info.crc}`, 'text-white font-bold');
+  return info;
+}
+
+/* ============================================================
+ * 9. CARGA DE ARCHIVOS
+ * ============================================================ */
+function pickMainFile(files) {
+  const roms = files.filter(f => ALL_ROM_EXTS.includes(extOf(f.name)));
+  if (!roms.length) return files[0];
+  const noCue = roms.filter(f => extOf(f.name) !== 'cue');
+  return (noCue.length ? noCue : roms).sort((a, b) => b.size - a.size)[0];
+}
+
+async function handleFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  // Clasificación automática: saves, BIOS, ROM
+  const saves = files.filter(f => SAVE_EXTS.includes(extOf(f.name)) && f.size < 64 * 1048576);
+  const rest = files.filter(f => !saves.includes(f));
+  if (saves.length) await importSaves(saves);
+  if (!rest.length) return;
+  const bios = rest.find(f => /scph|bios|psx\.bin|ps-?\d{2}/i.test(f.name) && f.size >= 64 * 1024 && f.size <= 8 * 1048576 && ['bin','rom'].includes(extOf(f.name)));
+  if (bios && rest.length === 1) { await handleBios(bios); return; }
+  const main = pickMainFile(rest);
+  if (rest.some(f => extOf(f.name) === 'cue') && rest.length > 1) toast('Se detectó .cue + .bin: cargo el .bin directamente.', 'info');
+  launchFile(main);
+}
+
+async function launchFile(file) {
+  if (!file) return;
+  const ext = extOf(file.name);
+  if (file.size === 0) { toast('El archivo está vacío.', 'error'); return; }
+  if (ext === 'cue') { toast('Un .cue solo no basta: selecciona el .bin/.iso (o un .chd/.zip).', 'warn'); return; }
+  if (ext && !ALL_ROM_EXTS.includes(ext)) { toast(`Extensión ".${ext}" no soportada. Prueba: ${ALL_ROM_EXTS.filter(e => e !== 'cue').join(', ')}`, 'error'); return; }
+
+  resetViewport(true);
+  S.file = file;
+
+  if (ext === 'gba') setConsole('gba', true);
+  else if (['sfc','smc'].includes(ext)) setConsole('snes', true);
+  else if (['z64','n64','v64'].includes(ext)) setConsole('n64', true);
+  else if (ext === 'elf') setConsole('ps2', true);
+  else if (ext === 'cso' && S.console !== 'psp') setConsole('psp', true);
+  else if (['iso','bin','chd'].includes(ext) && file.size > 1.0 * 1073741824 && !['psp'].includes(S.console)) setConsole('ps2', true);
+  else if (!CONSOLES[S.console].exts.includes(ext) && ext) {
+    const guess = Object.keys(CONSOLES).find(k => CONSOLES[k].exts.includes(ext) && !['zip','7z'].includes(ext)); if (guess) setConsole(guess, true);
+  }
+
+  $('dropzone-view').classList.add('hidden');
+  $('active-emulator-container').classList.add('hidden');
+  const lv = $('loading-view'); lv.classList.remove('hidden'); lv.classList.add('flex');
+  $('launch-actions').classList.add('hidden');
+  $('loader-ring').classList.remove('done');
+  $('loading-bar').style.width = '0%'; $('loading-percent-badge').textContent = '0%';
+  $('current-rom-title').textContent = `${file.name} (${fmtBytes(file.size)})`;
+  $('loading-title').textContent = `Analizando ${file.name}`;
+  $('loading-subtitle').textContent = 'Leyendo cabeceras y buscando identificadores…';
+
+  let meta;
+  try { meta = await analyzeFile(file); }
+  catch (e) { logLine(`[ERROR] ${e.message}`, 'text-red-400'); showActions('No se pudo leer el archivo: ' + e.message + '. Si está en la nube (Drive/OneDrive), descárgalo primero.'); return; }
+  S.meta = meta;
+
+  // Corrección automática de consola según contenido
+  if (meta.isPSP && S.console !== 'psp') { setConsole('psp', true); toast('Detectado disco de PSP → núcleo PPSSPP', 'info'); }
+  else if (meta.isPS2 && S.console !== 'ps2') { setConsole('ps2', true); toast('Detectado disco de PS2 (BOOT2)', 'info'); }
+  else if (meta.isPS1 && S.console === 'ps2') { setConsole('psx', true); toast('Detectado disco de PS1 (BOOT) → núcleo PCSX-ReARMed', 'info'); }
+
+  const pill = $('detected-gameid-pill');
+  pill.textContent = meta.id !== '—' ? meta.id : ext.toUpperCase(); pill.classList.remove('hidden');
+  $('loader-ring').classList.add('done');
+  $('loading-title').textContent = 'Archivo verificado';
+  $('loading-subtitle').textContent = `${CONSOLES[S.console].name} • listo`;
+  addToLibrary(file);
+
+  const cfg = CONSOLES[S.console];
+  if (cfg.inpage) {
+    if (!S.ps2.ok) { showActions(`No puedo arrancar Play! dentro de la página: ${S.ps2.reason}`, { play: true }); return; }
+    await sleep(250);
+    bootPS2();
+    return;
+  }
+  if (cfg.needsThreads && window.crossOriginIsolated !== true) {
+    showActions('PSP (PPSSPP) necesita SharedArrayBuffer y esta página no está aislada (faltan cabeceras COOP/COEP). Descarga el archivo _headers, súbelo junto a tu index.html en Netlify/Cloudflare Pages y recarga. Puedes intentar arrancar igualmente, pero probablemente falle.', { force: true });
+    return;
+  }
+  await sleep(350);
+  bootEmulator();
+}
+
+function showActions(text, opts = {}) {
+  $('launch-warning-text').textContent = text;
+  $('btn-force-boot').classList.toggle('hidden', !opts.force);
+  $('btn-open-play').classList.toggle('hidden', !opts.play);
+  $('launch-actions').classList.remove('hidden');
+}
+
+/* ============================================================
+ * 10. ARRANQUE DEL NÚCLEO WASM (EMULATORJS)
+ * ============================================================ */
+function frameHtml(cfg) {
+  const j = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}#game{width:100%;height:100%}</style></head><body><div id="game"></div><script>
+var C=${j(cfg)};
+window.EJS_player='#game';window.EJS_core=C.core;window.EJS_gameName=C.name;window.EJS_gameUrl=C.gameUrl;
+window.EJS_pathtodata=C.path;window.EJS_color='#7c3aed';window.EJS_startOnLoaded=true;window.EJS_threads=C.threads;window.EJS_language='es-ES';
+if(C.biosUrl)window.EJS_biosUrl=C.biosUrl;
+if(C.stateUrl)window.EJS_loadStateURL=C.stateUrl;
+function send(t,e){try{var b=e&&(e.state||e.save||e);parent.postMessage({avj:1,type:t,buffer:b},'*');}catch(x){}}
+window.EJS_onGameStart=function(){parent.postMessage({avj:1,type:'start'},'*');};
+window.EJS_onSaveState=function(e){send('state',e);};
+window.EJS_onSaveSave=function(e){send('srm',e);};
+window.EJS_onSaveUpdate=function(e){send('srm',e);};
+<\/script><script src="${cfg.path}loader.js"><\/script></body></html>`;
+}
+
+function revokeUrls() { ['blobUrl','biosUrl','stateUrl'].forEach(k => { if (S[k]) { URL.revokeObjectURL(S[k]); S[k] = null; } }); }
+
+function bootEmulator() {
+  if (!S.file) return;
+  const cfg = CONSOLES[S.console];
+  if (!cfg.core) { toast('Este sistema no se ejecuta dentro de la página.', 'warn'); return; }
+  flushPlaytime(); clearInterval(S.timer);
+  revokeUrls();
+  S.blobUrl = URL.createObjectURL(S.file);
+  if (S.biosBlob && S.console === 'psx') S.biosUrl = URL.createObjectURL(S.biosBlob);
+  if (S.pendingState) { S.stateUrl = URL.createObjectURL(S.pendingState); S.pendingState = null; }
+
+  const box = $('active-emulator-container');
+  box.innerHTML = '';
+  const frame = document.createElement('iframe');
+  frame.id = 'emu-frame';
+  frame.allow = 'autoplay; fullscreen; gamepad; cross-origin-isolated';
+  frame.setAttribute('allowfullscreen', '');
+  frame.srcdoc = frameHtml({
+    core: cfg.core, name: S.file.name.replace(/['"<>&\\]/g, ''), gameUrl: S.blobUrl, biosUrl: S.biosUrl || '', stateUrl: S.stateUrl || '',
+    threads: window.crossOriginIsolated === true, path: EJS_PATH
+  });
+  box.appendChild(frame);
+
+  $('loading-view').classList.add('hidden'); $('loading-view').classList.remove('flex');
+  $('dropzone-view').classList.add('hidden');
+  box.classList.remove('hidden');
+  ['btn-reset','btn-quick-save','btn-quick-load'].forEach(i => $(i).classList.remove('hidden'));
+  S.running = true;
+  toast(`Descargando núcleo ${cfg.badge}… la primera vez tarda unos segundos`, 'info');
+}
+
+window.addEventListener('message', async (e) => {
+  const d = e.data;
+  if (!d || d.avj !== 1) return;
+  const frame = $('emu-frame');
+  if (!frame || e.source !== frame.contentWindow) return;
+  if (d.type === 'start') {
+    S.startedAt = Date.now();
+    $('playtime-pill').classList.remove('hidden');
+    clearInterval(S.timer);
+    S.timer = setInterval(() => { $('playtime-text').textContent = fmtDur(Date.now() - S.startedAt); }, 1000);
+    toast(`Ejecutando "${S.file.name}"`, 'success');
+    if (!S.welcomed) { S.welcomed = true; setTimeout(openModal, 2500); }
+  } else if ((d.type === 'state' || d.type === 'srm') && d.buffer) {
+    try {
+      const ext = d.type === 'state' ? 'state' : 'srm';
+      await saveBlob(new Blob([d.buffer]), `${baseName(S.file.name)}.${ext}`, S.console, ext, baseName(S.file.name));
+      toast(`Partida (${ext}) guardada en tu navegador`, 'success');
+    } catch (err) { toast('No se pudo guardar: ' + err.message, 'error'); }
+  }
+});
+
+async function probePS2() {
+  const r = { ok: false, reason: '' };
+  const need = 'Súbela a un hosting (Netlify, Cloudflare Pages…) con Play.js, Play.wasm, ps2.html y _headers junto a index.html.';
+  if (location.protocol === 'file:') r.reason = 'La página está abierta como archivo local (file://). ' + need;
+  else {
+    try {
+      const names = ['Play.js', 'Play.wasm', 'ps2.html'];
+      const res = await Promise.all(names.map(n => fetch(n, { method: 'HEAD', cache: 'no-store' }).catch(() => null)));
+      const miss = names.filter((n, i) => !res[i] || !res[i].ok);
+      if (miss.length) r.reason = `Faltan junto a index.html: ${miss.join(', ')}.`;
+    } catch (e) { r.reason = 'No pude comprobar los archivos de Play!.'; }
+  }
+  if (!r.reason && !(window.crossOriginIsolated === true && typeof SharedArrayBuffer !== 'undefined')) r.reason = 'Falta aislamiento COOP/COEP (SharedArrayBuffer). Sube el archivo _headers (botón "Descargar _headers") y recarga. Safari no lo soporta todavía.';
+  if (!r.reason) { try { if (!document.createElement('canvas').getContext('webgl2')) r.reason = 'Tu navegador o GPU no ofrece WebGL2.'; } catch (e) { r.reason = 'WebGL2 no disponible.'; } }
+  r.ok = !r.reason;
+  S.ps2 = r;
+}
+
+async function bootPS2() {
+  const box = $('active-emulator-container');
+  box.innerHTML = '';
+  const frame = document.createElement('iframe');
+  frame.id = 'emu-frame';
+  frame.allow = 'autoplay; fullscreen; gamepad; cross-origin-isolated';
+  frame.src = 'ps2.html';
+  box.appendChild(frame); box.classList.remove('hidden');
+  $('btn-reset').classList.remove('hidden'); $('btn-log').classList.remove('hidden');
+  $('loader-ring').classList.remove('done');
+  $('loading-title').textContent = 'Iniciando Play! (PS2)';
+  $('loading-subtitle').textContent = 'Cargando motor y leyendo tu disco a memoria…';
+  $('loading-bar').style.width = '0%'; $('loading-percent-badge').textContent = '0%';
+  const fail = (msg) => {
+    techLog('[ERROR] ' + msg, 'text-red-400');
+    box.classList.add('hidden'); box.innerHTML = '';
+    $('loader-ring').classList.add('done');
+    $('loading-title').textContent = 'No se pudo iniciar PS2';
+    showActions(msg + ' Pulsa el botón "Log" o revisa el registro de arriba para más detalles.', {});
+  };
+  try {
+    await new Promise((res, rej) => { frame.onload = res; setTimeout(() => rej(new Error('ps2.html no cargó')), 15000); });
+    const api = frame.contentWindow.AVJ_PS2;
+    if (!api) throw new Error('ps2.html no inició correctamente.');
+    S.ps2run = { api };
+    let mem = null; try { mem = await dbGet('bios_store', 'ps2_memcards'); } catch (e) { /* sin memory cards */ }
+    await api.boot(S.file, { memcards: mem ? mem.files : null }, {
+      onLog: (t, c) => techLog(t, c),
+      onProgress: (f, bytes) => {
+        const pct = Math.round(f * 100);
+        $('loading-bar').style.width = pct + '%'; $('loading-percent-badge').textContent = pct + '%';
+        $('telemetry-bytes-read').textContent = `${fmtBytes(bytes)} cargados en memoria`; $('telemetry-read-speed').textContent = '';
+      },
+      onStart: () => {
+        $('loading-view').classList.add('hidden'); $('loading-view').classList.remove('flex');
+        $('fps-pill').classList.remove('hidden'); $('playtime-pill').classList.remove('hidden');
+        S.running = true; S.startedAt = Date.now();
+        clearInterval(S.timer); S.timer = setInterval(() => { $('playtime-text').textContent = fmtDur(Date.now() - S.startedAt); }, 1000);
+        try { frame.focus(); frame.contentWindow.focus(); } catch (e) { /* ignorar */ }
+        toast(`Play! ejecutando "${S.file.name}". Haz clic en la pantalla para dar foco al teclado.`, 'success');
+        if (!S.welcomed) { S.welcomed = true; setTimeout(openModal, 3500); }
+      },
+      onFps: (f) => { $('fps-pill').textContent = f + ' fps'; },
+      onMemcards: async (files) => { try { await dbPut('bios_store', { id: 'ps2_memcards', files, ts: Date.now() }); } catch (e) { /* ignorar */ } },
+      onError: (m) => fail(m)
+    });
+  } catch (e) { fail(e.message || String(e)); }
+}
+
+function resetViewport(keepFile) {
+  if (S.ps2run) {
+    try { const files = S.ps2run.api.collectMemcards(); if (files && files.length) dbPut('bios_store', { id: 'ps2_memcards', files, ts: Date.now() }).catch(() => {}); S.ps2run.api.stop(); } catch (e) { /* ignorar */ }
+    S.ps2run = null;
+  }
+  $('tech-log').innerHTML = ''; $('tech-log').classList.add('hidden');
+  flushPlaytime(); clearInterval(S.timer);
+  S.running = false;
+  const box = $('active-emulator-container');
+  const fr = $('emu-frame'); if (fr) fr.src = 'about:blank';
+  box.innerHTML = ''; box.classList.add('hidden');
+  revokeUrls();
+  $('loading-view').classList.add('hidden'); $('loading-view').classList.remove('flex');
+  $('launch-actions').classList.add('hidden');
+  $('dropzone-view').classList.remove('hidden');
+  ['btn-reset','btn-quick-save','btn-quick-load','detected-gameid-pill','playtime-pill','btn-log','fps-pill'].forEach(i => $(i).classList.add('hidden'));
+  $('playtime-text').textContent = '0:00';
+  $('current-rom-title').textContent = 'Ningún archivo cargado';
+  ['rom-file-input','import-save-input','bios-file-input'].forEach(i => { $(i).value = ''; });
+  if (!keepFile) { S.file = null; S.meta = null; }
+}
+
+function toggleFullscreen() {
+  const v = $('emulator-viewport');
+  if (!document.fullscreenElement) { (v.requestFullscreen || v.webkitRequestFullscreen || (() => Promise.reject())).call(v).catch(() => toast('Tu navegador no permite pantalla completa aquí.', 'warn')); }
+  else document.exitFullscreen();
+}
+
+/* ============================================================
+ * 11. DIAGNÓSTICO, HEADERS, GAMEPAD, MODAL
+ * ============================================================ */
+function checkIsolation() {
+  const ok = window.crossOriginIsolated === true && typeof SharedArrayBuffer !== 'undefined';
+  const pill = $('coop-status-pill'), diag = $('diag-isolated-bool');
+  if (ok) {
+    pill.textContent = 'SharedArrayBuffer: ACTIVO';
+    pill.className = 'text-[11px] font-mono px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-500/40 text-emerald-300';
+    diag.textContent = 'true'; diag.className = 'font-mono text-[11px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+  } else {
+    pill.textContent = location.protocol === 'file:' ? 'Abierto como archivo local (file://)' : 'SharedArrayBuffer: inactivo';
+    pill.className = 'text-[11px] font-mono px-2.5 py-1 rounded-lg bg-amber-950/80 border border-amber-500/40 text-amber-300';
+    diag.textContent = 'false'; diag.className = 'font-mono text-[11px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30';
+  }
+}
+function downloadHeaders() {
+  downloadBlob(new Blob(['/*\n  Cross-Origin-Embedder-Policy: credentialless\n  Cross-Origin-Opener-Policy: same-origin\n'], { type: 'text/plain;charset=utf-8' }), '_headers');
+  toast('"_headers" descargado. Súbelo junto a tu index.html (Netlify / Cloudflare Pages).', 'success');
+}
+function updateGamepad() {
+  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(p => p && p.connected) : [];
+  const on = pads.length > 0;
+  $('gamepad-dot').className = 'w-2 h-2 rounded-full ' + (on ? 'bg-emerald-400 animate-ping' : 'bg-amber-400');
+  $('gamepad-icon').className = on ? 'fa-solid fa-gamepad text-emerald-400' : 'fa-solid fa-keyboard text-avj-400';
+  $('gamepad-text').textContent = on ? 'Mando conectado' : 'Modo Teclado';
+  $('gamepad-indicator').className = 'flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-medium transition-all ' + (on ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-200' : 'bg-zinc-900/90 border-zinc-800 text-zinc-300');
+}
+window.addEventListener('gamepadconnected', (e) => { updateGamepad(); toast('Mando detectado: ' + e.gamepad.id.slice(0, 32), 'success'); });
+window.addEventListener('gamepaddisconnected', () => { updateGamepad(); toast('Mando desconectado', 'info'); });
+setInterval(updateGamepad, 2000);
+
+function openModal() { const m = $('community-modal'); m.classList.remove('hidden'); m.classList.add('flex'); }
+function closeModal() { const m = $('community-modal'); m.classList.add('hidden'); m.classList.remove('flex'); }
+
+/* ============================================================
+ * 12. EVENTOS
+ * ============================================================ */
+const ACTIONS = {
+  'select-console': (el) => setConsole(el.dataset.console),
+  'open-modal': openModal,
+  'close-modal': closeModal,
+  'reset': () => resetViewport(),
+  'fullscreen': toggleFullscreen,
+  'quick-save': quickSave,
+  'quick-load': quickLoad,
+  'force-boot': () => { $('launch-actions').classList.add('hidden'); bootEmulator(); },
+  'toggle-log': () => $('tech-log').classList.toggle('hidden'),
+  'open-play': () => window.open(PLAY_WEB_URL, '_blank', 'noopener,noreferrer'),
+  'download-headers': downloadHeaders,
+  'clear-bios': clearBios,
+  'refresh-saves': () => { renderSaves(); renderLibrary(); updateStorageEstimate(); toast('Lista actualizada', 'info'); },
+  'export-latest': exportLatest,
+  'apply-save': (el) => applySave(el.dataset.id),
+  'download-save': (el) => downloadSave(el.dataset.id),
+  'delete-save': (el) => deleteSave(el.dataset.id),
+  'play-library': (el) => playFromLibrary(el.dataset.id),
+  'delete-library': async (el) => { try { await dbDel('library_store', el.dataset.id); } catch (e) { /* ignorar */ } renderLibrary(); updateStorageEstimate(); },
+  'clear-library': async () => { try { await dbClear('library_store'); } catch (e) { /* ignorar */ } renderLibrary(); updateStorageEstimate(); toast('Recientes vaciados', 'info'); }
+};
+document.addEventListener('click', (e) => {
+  if (e.target.id === 'community-modal') { closeModal(); return; }
+  const el = e.target.closest('[data-action]');
+  if (el && ACTIONS[el.dataset.action]) ACTIONS[el.dataset.action](el);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+$('rom-file-input').addEventListener('change', (e) => { const f = Array.from(e.target.files); e.target.value = ''; handleFiles(f); });
+$('bios-file-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; handleBios(f); });
+$('import-save-input').addEventListener('change', (e) => { const f = Array.from(e.target.files); e.target.value = ''; importSaves(f); });
+
+// Arrastrar y soltar en toda la página
+let dragDepth = 0;
+const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+window.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; $('global-drop').classList.remove('hidden'); $('global-drop').classList.add('flex'); });
+window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+window.addEventListener('dragleave', (e) => { if (!hasFiles(e)) return; dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) { $('global-drop').classList.add('hidden'); $('global-drop').classList.remove('flex'); } });
+window.addEventListener('drop', (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault(); dragDepth = 0;
+  $('global-drop').classList.add('hidden'); $('global-drop').classList.remove('flex');
+  handleFiles(e.dataTransfer.files);
+});
+window.addEventListener('beforeunload', () => { revokeUrls(); });
+
+/* ============================================================
+ * 13. INICIO
+ * ============================================================ */
+(async function init() {
+  buildConsoleCards();
+  let last = 'psx'; try { last = localStorage.getItem('avj_console') || 'psx'; } catch (e) { /* ignorar */ }
+  setConsole(CONSOLES[last] ? last : 'psx', true);
+  updateGamepad(); checkIsolation();
+  await probePS2();
+  await initDB();
+  if (!S.db) toast('IndexedDB no disponible: BIOS, partidas y recientes no se guardarán (¿modo privado?).', 'warn');
+  await Promise.all([loadBios(), renderSaves(), renderLibrary()]);
+  updateStorageEstimate();
+  if (location.protocol === 'file:') toast('Estás abriendo el archivo localmente. Para mejores resultados, sírvelo desde un hosting (Netlify, GitHub Pages) o con un servidor local.', 'warn');
+})();
+
+})();
+</script>
+</body>
+</html>
