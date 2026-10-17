@@ -125,6 +125,10 @@
     if (why) throw new Error(why);
     if (file.size > MAX_BYTES) throw new Error('El archivo supera 3 GB y no cabe en la memoria del navegador. Conviértelo a .chd (chdman createdvd) para reducirlo.');
 
+    try {
+      const g = document.createElement('canvas').getContext('webgl2'); const ext = g && g.getExtension('WEBGL_debug_renderer_info');
+      log(`[entorno] GPU: ${ext ? g.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'desconocida'} · hilos CPU: ${navigator.hardwareConcurrency || '?'} · RAM aprox: ${navigator.deviceMemory || '?'} GB · modo disco: ${opts.diskMode || 'chunk'}`, 'text-zinc-400');
+    } catch (e) { /* ignorar */ }
     log('Cargando motor Play! (Play.js + Play.wasm)…', 'text-avj-300');
     const Play = await loadPlay();
 
@@ -157,9 +161,21 @@
     const safe = file.name.replace(/[^A-Za-z0-9._-]/g, '_');
     const path = '/discs/' + safe;
     log(`Leyendo "${file.name}" a memoria (${(file.size / 1048576).toFixed(0)} MB)…`, 'text-avj-300');
-    const { chunks, CH } = await readChunks(file, h.onProgress);
     stats.reads = 0; stats.bytes = 0; stats.lastPos = 0;
-    mountChunked(FS, path, file.size, chunks, CH, stats);
+    if (opts.diskMode === 'memfs') {
+      if (file.size > 1900 * 1048576) throw new Error('El modo compatible admite hasta ~1.9 GB. Convierte el disco a .chd.');
+      const big = new Uint8Array(file.size), CH = 16 * 1048576;
+      for (let o = 0; o < file.size; o += CH) {
+        big.set(new Uint8Array(await file.slice(o, Math.min(file.size, o + CH)).arrayBuffer()), o);
+        h.onProgress && h.onProgress(Math.min(file.size, o + CH) / file.size, Math.min(file.size, o + CH));
+        await tick();
+      }
+      FS.writeFile(path, big, { canOwn: true });
+      log('Disco escrito en el sistema de archivos estándar (MEMFS).', 'text-emerald-400');
+    } else {
+      const { chunks, CH } = await readChunks(file, h.onProgress);
+      mountChunked(FS, path, file.size, chunks, CH, stats);
+    }
     log('Disco montado en ' + path, 'text-emerald-400');
 
     if (typeof Mod._initVm === 'function') { log('Inicializando máquina virtual (initVm)…'); Mod._initVm(); }
@@ -178,20 +194,20 @@
     try { window.focus(); canvas.focus(); } catch (e) {}
 
     if (typeof Mod.getFrames === 'function') {
-      let last = null, lastT = performance.now(), perCall = false, n = 0, zeroSecs = 0, warned = false;
+      let last = null, lastT = performance.now(), perCall = false, n = 0, zeroSecs = 0, warned = false, total = 0;
       fpsTimer = setInterval(() => {
         try {
           const f = Number(Mod.getFrames()), now = performance.now();
           if (n < 8) log(`[fps] getFrames() = ${f}`, 'text-zinc-400');
           let fps = 0;
           if (last !== null && f < last) perCall = true;           // el contador se reinicia al leerlo
-          if (perCall) fps = f;
-          else if (last !== null && now > lastT) fps = (f - last) * 1000 / (now - lastT);
+          if (perCall) { fps = f; total += f; }
+          else { total = f; if (last !== null && now > lastT) fps = (f - last) * 1000 / (now - lastT); }
           last = f; lastT = now; n++;
-          fps = Math.max(0, Math.round(fps));
-          h.onFps && h.onFps(fps, { reads: stats.reads, mb: stats.bytes / 1048576 });
-          zeroSecs = fps === 0 ? zeroSecs + 1 : 0;
-          if (zeroSecs >= 25 && !warned) { warned = true; h.onStall && h.onStall({ reads: stats.reads, mb: stats.bytes / 1048576, lastPos: stats.lastPos }); }
+          fps = Math.max(0, Math.round(fps * 10) / 10);
+          h.onFps && h.onFps(fps, { reads: stats.reads, mb: stats.bytes / 1048576, frames: total });
+          zeroSecs = total > 0 ? 0 : zeroSecs + 1;
+          if (zeroSecs >= 20 && !warned) { warned = true; h.onStall && h.onStall({ reads: stats.reads, mb: stats.bytes / 1048576, lastPos: stats.lastPos }); }
         } catch (e) { clearInterval(fpsTimer); }
       }, 1000);
     }
