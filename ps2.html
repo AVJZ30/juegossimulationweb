@@ -1,257 +1,263 @@
 <!DOCTYPE html>
 <html lang="es">
-<head>
-<meta charset="utf-8">
-<title>AVJ RetroPlay · Play! PS2</title>
-<style>
-  html,body{margin:0;width:100%;height:100%;background:#000;overflow:hidden}
-  canvas{display:block;width:100%;height:100%;object-fit:contain;outline:none;background:#000}
-</style>
-</head>
-<body>
-<canvas id="outputCanvas" tabindex="-1" width="640" height="480"></canvas>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AVJ RetroPlay · Play! PS2</title>
+<style>html,body{margin:0;width:100%;height:100%;background:#090412;overflow:hidden}canvas{display:block;width:100%;height:100%;object-fit:contain;outline:none;background:#000}</style></head>
+<body><canvas id="outputCanvas" tabindex="0" width="640" height="480" aria-label="Pantalla PS2. Haz clic para activar teclado y mando."></canvas>
 <script>
-/* Puente entre AVJ RetroPlay (index.html) y el Play! oficial (Play.js + Play.wasm).
-   La página principal llama a window.AVJ_PS2.boot(file, opts, hooks). */
-(function () {
+/* Play! d44bfa18: disc images use Module.discImageDevice, NOT MEMFS.
+   Keep Play.js and Play.wasm paired. See PS2-VERIFICACION.md. */
+(() => {
   'use strict';
-  const BUILD = 'c';
   const canvas = document.getElementById('outputCanvas');
-  const stats = { reads: 0, bytes: 0, lastPos: 0, stat: 0 };
-  let Mod = null, fpsTimer = null, memTimer = null, lastMemSig = '', h = {};
-  const log = (t, c) => { try { h.onLog && h.onLog(t, c); } catch (e) {} };
-  const MAX_BYTES = 3 * 1024 * 1024 * 1024;
+  const PLAY_URL = new URL('Play.js', location.href).href;
+  let Mod, hooks = {}, booted = false, stopped = false, failed = false;
+  let fpsTimer, saveTimer, inputFrame, totalFrames = 0, lastSave = null;
+  let saveQueue = Promise.resolve();
+  const stats = { reads: 0, bytes: 0, lastPos: 0, pending: false, lastReadMs: 0 };
+  const log = (s, c = 'text-zinc-300') => { console.log('[PS2]', s); hooks.onLog?.(s, c); };
+  function fail(e) {
+    if (failed || stopped) return;
+    failed = true;
+    log('[ERROR] ' + (e?.message || e), 'text-red-400');
+    clearInterval(fpsTimer); clearInterval(saveTimer); cancelAnimationFrame(inputFrame);
+    releaseInputs();
+    // Defer iframe removal until the current proxied callback has returned.
+    setTimeout(() => hooks.onError?.(String(e?.message || e)), 0);
+  }
+  window.addEventListener('error', e => fail(e.error || e.message));
+  window.addEventListener('unhandledrejection', e => fail(e.reason));
+  canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); fail('Contexto WebGL perdido. Reinicia el emulador.'); });
+  canvas.addEventListener('webglcontextcreationerror', e => log('[gl] ' + e.statusMessage, 'text-red-400'));
+  canvas.addEventListener('pointerdown', () => canvas.focus());
 
   function support() {
-    if (location.protocol === 'file:') return 'La página está abierta como archivo local (file://).';
-    if (!self.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') return 'Falta aislamiento COOP/COEP (SharedArrayBuffer). Sube el archivo _headers.';
-    try { if (!document.createElement('canvas').getContext('webgl2')) return 'Tu navegador o GPU no ofrece WebGL2.'; } catch (e) { return 'WebGL2 no disponible.'; }
+    if (location.protocol === 'file:') return 'Usa HTTPS o localhost, no file://.';
+    if (!self.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') return 'Falta aislamiento COOP/COEP. Comprueba coi-sw.js y recarga la página.';
+    const gl = document.createElement('canvas').getContext('webgl2');
+    if (!gl) return 'WebGL2 no está disponible.';
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
     return '';
   }
 
-  // Play.js es un módulo ES (export default Play): hay que importarlo, no cargarlo como script clásico
-  const PLAY_URL = new URL('Play.js', location.href).href;
-  async function loadPlay() {
-    try {
-      const m = await import(PLAY_URL);
-      if (typeof m.default !== 'function') throw new Error('Play.js no exporta una función por defecto.');
-      return m.default;
-    } catch (e) {
-      let st = ''; try { const r = await fetch(PLAY_URL, { method: 'HEAD', cache: 'no-store' }); st = ' [HTTP ' + r.status + ']'; } catch (x) { st = ' [sin respuesta]'; }
-      throw new Error('No se pudo cargar ' + PLAY_URL + st + ': ' + (e && e.message ? e.message : e));
+  class DiscImageDevice {
+    constructor(module) { this.module = module; this.file = null; this.doneFlag = true; }
+    setFile(file) { this.file = file; }
+    getFileSize() { if (!this.file) throw Error('No hay disco seleccionado.'); return this.file.size; }
+    isDone() { return this.doneFlag; }
+    read(dstPtr, offset, size) {
+      this.doneFlag = false;
+      stats.pending = true;
+      const started = performance.now();
+      // The native stream serializes requests and polls isDone on the VM pthread.
+      // Do not block the main thread with Atomics.wait or a synchronous wait loop.
+      const ptr = dstPtr >>> 0, count = size >>> 0;
+      if (!this.file || !Number.isSafeInteger(offset) || offset < 0 || offset + count > this.file.size) {
+        this.doneFlag = true; stats.pending = false;
+        fail('Lectura fuera del disco: posición ' + offset + ', tamaño ' + count + '. Archivo truncado o formato no compatible.');
+        return;
+      }
+      this.file.slice(offset, offset + count).arrayBuffer().then(data => {
+        if (stopped || failed) return;
+        if (data.byteLength !== count) throw Error('Lectura incompleta del archivo local.');
+        // Obtain HEAPU8 after awaiting: memory growth may have replaced the view.
+        const heap = this.module.HEAPU8;
+        if (ptr + count > heap.byteLength) throw Error('Destino de lectura fuera de la memoria WASM.');
+        heap.set(new Uint8Array(data), ptr);
+        stats.reads++; stats.bytes += count; stats.lastPos = offset;
+        stats.lastReadMs = performance.now() - started;
+        if (stats.reads <= 8) log(`[disco] read #${stats.reads}: offset=${offset}, bytes=${count}, ${stats.lastReadMs.toFixed(1)} ms`);
+      }).catch(fail).finally(() => { stats.pending = false; this.doneFlag = true; });
     }
   }
 
-  const tick = () => new Promise(r => setTimeout(r, 0));
-
-  async function readChunks(file, onProgress) {
-    const CH = 16 * 1048576, n = Math.max(1, Math.ceil(file.size / CH)), chunks = new Array(n);
-    for (let i = 0; i < n; i++) {
-      chunks[i] = new Uint8Array(await file.slice(i * CH, Math.min(file.size, (i + 1) * CH)).arrayBuffer());
-      onProgress && onProgress((i + 1) / n, Math.min(file.size, (i + 1) * CH));
-      if (i % 3 === 2) await tick();
+  function mkdirp(path) {
+    let dir = '';
+    for (const part of path.split('/').filter(Boolean)) {
+      dir += '/' + part;
+      if (!Mod.FS.analyzePath(dir).exists) Mod.FS.mkdir(dir);
     }
-    return { chunks, CH };
   }
-
-  // Crea un archivo virtual que lee directamente de los trozos en RAM (sin duplicar el ISO en MEMFS)
-  function mountChunked(FS, path, size, chunks, CH, stats) {
-    const node = FS.create(path, 0o444);
-    node.usedBytes = size;
-    const origGet = node.node_ops && node.node_ops.getattr;
-    if (origGet) node.node_ops = Object.assign({}, node.node_ops, { getattr(nd) { if (stats.stat++ < 4) log('[disco] getattr (tamaño consultado)', 'text-zinc-400'); return origGet.call(this, nd); } });
-    node.stream_ops = {
-      open() { log('[disco] open: el emulador abrió el ISO', 'text-emerald-400'); },
-      close() { log('[disco] close', 'text-zinc-400'); },
-      llseek(stream, offset, whence) {
-        if (stats.seeks === undefined) stats.seeks = 0;
-        if (stats.seeks++ < 4) log(`[disco] llseek(${offset}, whence ${whence})`, 'text-zinc-400');
-        let p = offset;
-        if (whence === 1) p += stream.position; else if (whence === 2) p += size;
-        if (p < 0) throw new FS.ErrnoError(28);
-        return p;
-      },
-      read(stream, buffer, offset, length, position) {
-        try {
-          if (position >= size) return 0;
-          const n = Math.min(length, size - position);
-          const dst = new Uint8Array(buffer.buffer, buffer.byteOffset + offset, n);
-          let done = 0;
-          while (done < n) {
-            const p = position + done, c = chunks[(p / CH) | 0], co = p % CH, take = Math.min(n - done, c.length - co);
-            dst.set(c.subarray(co, co + take), done);
-            done += take;
-          }
-          stats.reads++; stats.bytes += n; stats.lastPos = position;
-          if (stats.reads <= 6) log(`[disco] lectura #${stats.reads}: pos ${position} · ${n} bytes`, 'text-zinc-400');
-          return done;
-        } catch (e) { log('[disco] ERROR de lectura: ' + (e && e.message ? e.message : e), 'text-red-400'); throw new FS.ErrnoError(5); }
-      },
-      write() { throw new FS.ErrnoError(63); }
-    };
-    return node;
+  // Discover native defaults instead of assuming a home directory for this build.
+  function cardRoots() {
+    const FS = Mod?.FS, roots = [];
+    if (!FS) return roots;
+    function walk(dir, depth) {
+      if (depth > 7) return;
+      for (const name of FS.readdir(dir)) {
+        if (name === '.' || name === '..') continue;
+        const p = (dir === '/' ? '' : dir) + '/' + name;
+        if (/^\/(dev|proc|tmp)(\/|$)/.test(p)) continue;
+        const node = FS.lstat(p);
+        if (!FS.isDir(node.mode)) continue;
+        if (/\/vfs\/mc[01]$/.test(p)) roots.push(p); else walk(p, depth + 1);
+      }
+    }
+    walk('/', 0); return roots;
   }
-
-  function mkdirp(FS, dir) {
-    let cur = '';
-    for (const part of dir.split('/').filter(Boolean)) { cur += '/' + part; try { FS.mkdir(cur); } catch (e) { /* ya existe */ } }
-  }
-
   function collectMemcards() {
-    const FS = Mod && Mod.FS, out = [];
-    if (!FS) return out;
-    const readDir = (dir, depth) => {
-      let names; try { names = FS.readdir(dir); } catch (e) { return; }
-      for (const n of names) {
-        if (n === '.' || n === '..') continue;
-        const p = (dir === '/' ? '' : dir) + '/' + n;
-        let st; try { st = FS.stat(p); } catch (e) { continue; }
-        if (FS.isDir(st.mode)) { if (depth < 4) readDir(p, depth + 1); }
-        else { try { out.push({ path: p, data: new Uint8Array(FS.readFile(p)) }); } catch (e) { /* ignorar */ } }
+    const FS = Mod?.FS, files = [];
+    if (!FS) return files;
+    function walk(dir) {
+      for (const name of FS.readdir(dir)) {
+        if (name === '.' || name === '..') continue;
+        const path = dir + '/' + name, st = FS.lstat(path);
+        if (FS.isDir(st.mode)) walk(path);
+        else if (FS.isFile(st.mode)) files.push({ path, data: new Uint8Array(FS.readFile(path)) });
       }
-    };
-    const find = (dir, depth) => {
-      if (depth > 5) return;
-      let names; try { names = FS.readdir(dir); } catch (e) { return; }
-      for (const n of names) {
-        if (n === '.' || n === '..') continue;
-        const p = (dir === '/' ? '' : dir) + '/' + n;
-        if (['/proc', '/dev', '/discs', '/tmp'].includes(p)) continue;
-        let st; try { st = FS.stat(p); } catch (e) { continue; }
-        if (!FS.isDir(st.mode)) continue;
-        if (/Memorycards$/i.test(p)) readDir(p, 0); else find(p, depth + 1);
-      }
-    };
-    find('/', 0);
-    return out;
+    }
+    cardRoots().forEach(walk);
+    return files.sort((a,b) => a.path.localeCompare(b.path));
+  }
+  function sameFiles(a, b) {
+    return a && a.length === b.length && a.every((f,i) => f.path === b[i].path && f.data.length === b[i].data.length && f.data.every((v,j) => v === b[i].data[j]));
+  }
+  function persistCards() {
+    if (!Mod || failed || !hooks.onMemcards) return saveQueue;
+    const files = collectMemcards();
+    if (sameFiles(lastSave, files)) return saveQueue;
+    lastSave = files;
+    saveQueue = saveQueue.then(() => hooks.onMemcards(files)).catch(e => {
+      lastSave = null; log('[guardado] No se pudo guardar en IndexedDB: ' + e.message, 'text-amber-300');
+    });
+    return saveQueue;
   }
 
-  async function boot(file, opts, hooks) {
-    h = hooks || {}; opts = opts || {};
-    const why = support();
-    if (why) throw new Error(why);
-    if (file.size > MAX_BYTES) throw new Error('El archivo supera 3 GB y no cabe en la memoria del navegador. Conviértelo a .chd (chdman createdvd) para reducirlo.');
-
-    log(`[versión] ps2.html build ${BUILD}`, 'text-white font-bold');
-    // Registrar la creación de contextos WebGL en esta página
-    try {
-      const og = HTMLCanvasElement.prototype.getContext;
-      HTMLCanvasElement.prototype.getContext = function (t, a) { const r = og.call(this, t, a); if (this.id === 'outputCanvas') log(`[gl] getContext('${t}') → ${r ? 'OK' : 'NULL'}`, 'text-zinc-400'); return r; };
-      canvas.addEventListener('webglcontextlost', () => log('[gl] CONTEXTO WEBGL PERDIDO', 'text-red-400'));
-    } catch (e) { /* ignorar */ }
-    try {
-      const g = document.createElement('canvas').getContext('webgl2'); const ext = g && g.getExtension('WEBGL_debug_renderer_info');
-      log(`[entorno] GPU: ${ext ? g.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'desconocida'} · hilos CPU: ${navigator.hardwareConcurrency || '?'} · RAM aprox: ${navigator.deviceMemory || '?'} GB · modo disco: ${opts.diskMode || 'chunk'}`, 'text-zinc-400');
-    } catch (e) { /* ignorar */ }
-    log('Cargando motor Play! (Play.js + Play.wasm)…', 'text-avj-300');
-    const Play = await loadPlay();
-
-    let aborted = false;
-    const modPromise = Play({
-      canvas,
-      mainScriptUrlOrBlob: PLAY_URL,                                   // los hilos (workers) se crean desde Play.js
-      locateFile: (f) => new URL(f, PLAY_URL).href,                    // Play.wasm junto a Play.js
-      print: (t) => log(String(t), 'text-zinc-300'),
-      printErr: (t) => log(String(t), 'text-amber-300'),
-      setStatus: () => {},
-      onAbort: (w) => { aborted = true; log('[ABORT] ' + w, 'text-red-400'); h.onError && h.onError('El motor Play! se detuvo: ' + w); }
-    });
-    Mod = await Promise.race([modPromise, new Promise((_, rej) => setTimeout(() => rej(new Error('Play! no terminó de iniciar en 90 s.')), 90000))]);
-    const api = Object.keys(Mod).filter(k => /boot|initVm|frames/i.test(k));
-    log('Motor listo. Funciones disponibles: ' + (api.join(', ') || '(ninguna detectada)'), 'text-emerald-400');
-
-    const FS = Mod.FS;
-    if (!FS) throw new Error('Esta compilación de Play.js no expone el sistema de archivos (FS).');
-
-    // Restaurar Memory Cards guardadas
-    if (opts.memcards && opts.memcards.length) {
-      let n = 0;
-      for (const f of opts.memcards) { try { mkdirp(FS, f.path.replace(/\/[^/]*$/, '')); FS.writeFile(f.path, f.data); n++; } catch (e) { log('No se pudo restaurar ' + f.path + ': ' + e.message, 'text-amber-300'); } }
-      log(`Memory Cards restauradas: ${n}`, 'text-emerald-400');
-    }
-
-    // Montar el disco
-    try { FS.mkdir('/discs'); } catch (e) { /* ya existe */ }
-    const safe = file.name.replace(/[^A-Za-z0-9._-]/g, '_');
-    const path = '/discs/' + safe;
-    log(`Leyendo "${file.name}" a memoria (${(file.size / 1048576).toFixed(0)} MB)…`, 'text-avj-300');
-    stats.reads = 0; stats.bytes = 0; stats.lastPos = 0;
-    if (opts.diskMode === 'memfs') {
-      if (file.size > 1900 * 1048576) throw new Error('El modo compatible admite hasta ~1.9 GB. Convierte el disco a .chd.');
-      const big = new Uint8Array(file.size), CH = 16 * 1048576;
-      for (let o = 0; o < file.size; o += CH) {
-        big.set(new Uint8Array(await file.slice(o, Math.min(file.size, o + CH)).arrayBuffer()), o);
-        h.onProgress && h.onProgress(Math.min(file.size, o + CH) / file.size, Math.min(file.size, o + CH));
-        await tick();
+  // Native bindings in Source/ui_js/Main.cpp. This build has no analog input API;
+  // gamepad axes are mapped to the official simulated-axis keys (digital values).
+  const buttonCodes = ['KeyZ','KeyX','KeyA','KeyS','Key1','Key8','Key2','Key9','Backspace','Enter','Key3','Key0','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
+  const validCodes = new Set([...buttonCodes,'KeyF','KeyH','KeyT','KeyG','KeyJ','KeyL','KeyI','KeyK']);
+  const physical = new Set(), padKeys = new Set(), delivered = new Set();
+  function dispatchKey(code, down) { canvas.dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', {code, key:code, bubbles:true, cancelable:true})); }
+  function reconcileInputs() {
+    const next = new Set([...physical,...padKeys]);
+    for (const code of delivered) if (!next.has(code)) dispatchKey(code,false);
+    for (const code of next) if (!delivered.has(code)) dispatchKey(code,true);
+    delivered.clear(); next.forEach(c => delivered.add(c));
+  }
+  function releaseInputs() { physical.clear(); padKeys.clear(); reconcileInputs(); }
+  for (const type of ['keydown','keyup']) canvas.addEventListener(type, e => {
+    if (!e.isTrusted) return;
+    const code = e.code.replace(/^Digit([012389])$/, 'Key$1');
+    if (!validCodes.has(code)) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (type === 'keydown') physical.add(code); else physical.delete(code);
+    reconcileInputs();
+  }, true);
+  canvas.addEventListener('blur',releaseInputs);
+  window.addEventListener('blur',releaseInputs);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { releaseInputs(); persistCards(); } });
+  window.addEventListener('pagehide', () => { releaseInputs(); persistCards(); });
+  function pollInput() {
+    if (stopped || failed) return;
+    padKeys.clear();
+    if (!document.hidden && document.activeElement === canvas) {
+      const pad = Array.from(navigator.getGamepads?.() || []).find(p => p && p.mapping === 'standard');
+      if (pad) {
+        buttonCodes.forEach((code,i) => { if (pad.buttons[i]?.pressed) padKeys.add(code); });
+        [['KeyF','KeyH'],['KeyT','KeyG'],['KeyJ','KeyL'],['KeyI','KeyK']].forEach(([neg,pos],i) => {
+          if (pad.axes[i] < -0.25) padKeys.add(neg);
+          if (pad.axes[i] > 0.25) padKeys.add(pos);
+        });
       }
-      FS.writeFile(path, big, { canOwn: true });
-      log('Disco escrito en el sistema de archivos estándar (MEMFS).', 'text-emerald-400');
-    } else {
-      const { chunks, CH } = await readChunks(file, h.onProgress);
-      mountChunked(FS, path, file.size, chunks, CH, stats);
     }
-    log('Disco montado en ' + path, 'text-emerald-400');
+    reconcileInputs(); inputFrame = requestAnimationFrame(pollInput);
+  }
 
-    // Rastreo: qué archivos intenta abrir el emulador (primeras 80 llamadas)
-    (function traceFS() {
-      let n = 0; const L = (m) => { if (n++ < 80) log('[fs] ' + m, 'text-zinc-400'); };
-      ['open', 'stat', 'lstat', 'readlink', 'readdir'].forEach((k) => {
-        const orig = FS[k]; if (typeof orig !== 'function') return;
-        FS[k] = function () {
-          const a = arguments, name = typeof a[0] === 'string' ? a[0] : '(nodo)';
-          let r; try { r = orig.apply(FS, a); } catch (e) { L(`${k}("${name}") → ERROR errno=${e && e.errno}`); throw e; }
-          if (!/^\/(proc|dev)/.test(name)) L(`${k}("${name}") OK`);
-          return r;
-        };
-      });
-    })();
-
-    if (typeof Mod._initVm === 'function') { log('Inicializando máquina virtual (initVm)…'); Mod._initVm(); }
-
-    const isElf = /\.elf$/i.test(file.name);
-    if (isElf) {
-      if (typeof Mod.bootElf !== 'function') throw new Error('Esta compilación no expone bootElf.');
+  async function boot(file, opts = {}, h = {}) {
+    if (booted) throw Error('Crea un iframe nuevo para reiniciar Play!.');
+    hooks = h; const why = support(); if (why) throw Error(why);
+    if (!file?.size) throw Error('El archivo está vacío.');
+    booted = true;
+    log('[versión] AVJ PS2 disc-device · Play! d44bfa18');
+    log(`[entorno] isolated=${crossOriginIsolated}, CPU=${navigator.hardwareConcurrency}, disco=${file.size} bytes`);
+    // Instrument only this iframe; do not patch the generated Emscripten runtime.
+    const NativeWorker = window.Worker;
+    window.Worker = class extends NativeWorker {
+      constructor(url, options) {
+        super(url, options);
+        log(`[hilo] creado ${options?.name || ''} (${options?.type || 'classic'})`);
+        this.addEventListener('error', e => fail('Error en pthread: ' + e.message));
+        this.addEventListener('messageerror', () => fail('Mensaje de pthread no deserializable.'));
+        this.addEventListener('message', e => {
+          if (['loaded','alert'].includes(e.data?.cmd)) log('[hilo] ' + e.data.cmd + ' ' + (e.data.text || ''));
+        });
+      }
+      postMessage(message, ...rest) {
+        if (['load','run'].includes(message?.cmd)) log('[hilo] envío ' + message.cmd);
+        return super.postMessage(message,...rest);
+      }
+    };
+    const nativeContext = canvas.getContext.bind(canvas);
+    canvas.getContext = (type, attrs) => {
+      const result = nativeContext(type,attrs);
+      log(`[gl] ${type}: ${result ? 'OK' : 'NULL'}`);
+      return result;
+    };
+    const {default:Play} = await import(PLAY_URL);
+    let timeout;
+    try {
+      Mod = await Promise.race([Play({
+        canvas, mainScriptUrlOrBlob:PLAY_URL, locateFile:f => new URL(f,PLAY_URL).href,
+        print:s => { log(String(s)); if (/Failed to start:|Error mounting cdrom0/i.test(s)) fail(s); },
+        printErr:s => log('[motor] ' + s,'text-amber-300'), onAbort:fail
+      }), new Promise((_,reject) => { timeout=setTimeout(() => reject(Error('Tiempo de inicialización agotado (90 s).')),90000); })]);
+    } finally { clearTimeout(timeout); }
+    if (failed || stopped) return;
+    const FS = Mod.FS;
+    if (!FS || !Mod._initVm || !Mod.bootDiscImage || !Mod.clearStats) throw Error('Play.js/Play.wasm no corresponden a la interfaz oficial esperada.');
+    mkdirp('/work');
+    Mod.discImageDevice = new DiscImageDevice(Mod);
+    // Official order: await Play(), /work, disc device, initVm(), file, boot.
+    log('[vm] initVm; canvas #outputCanvas 640×480, WebGL2');
+    Mod._initVm();
+    const roots = cardRoots();
+    log('[memory cards] ' + roots.join(', '));
+    for (const f of opts.memcards || []) {
+      if (!roots.some(root => f.path.startsWith(root + '/')) || f.path.split('/').includes('..')) { log('[guardado] Ruta descartada: ' + f.path); continue; }
+      mkdirp(f.path.slice(0,f.path.lastIndexOf('/')));
+      FS.writeFile(f.path, new Uint8Array(f.data));
+    }
+    lastSave = collectMemcards();
+    // Trace native filesystem traffic (ELF, config, cards). ISO reads use the device.
+    for (const name of ['open','read','llseek']) {
+      const orig = FS[name]; let calls = 0;
+      FS[name] = function(...args) {
+        try { const result = orig.apply(FS,args); if (calls++ < 12) log(`[fs] ${name} ${typeof args[0] === 'string' ? args[0] : args[0]?.path || ''} OK`); return result; }
+        catch(e) { log(`[fs] ${name} errno=${e.errno}`); throw e; }
+      };
+    }
+    const name = file.name.replace(/[^A-Za-z0-9._-]/g,'_');
+    if (/\.elf$/i.test(name)) {
+      if (file.size > 128 * 1048576) throw Error('ELF demasiado grande (máximo 128 MB).');
+      const path='/work/'+name;
+      FS.writeFile(path,new Uint8Array(await file.arrayBuffer()),{canOwn:true});
       Mod.bootElf(path);
     } else {
-      if (typeof Mod.bootDiscImage !== 'function') throw new Error('Esta compilación no expone bootDiscImage.');
-      Mod.bootDiscImage(path);
+      Mod.discImageDevice.setFile(file);
+      Mod.bootDiscImage(name);
+      log('[disco] Archivo local conectado; lectura bajo demanda, sin precargar el ISO ni subirlo.');
     }
-    log('Arranque solicitado: ' + (isElf ? 'bootElf' : 'bootDiscImage'), 'text-white font-bold');
-    if (aborted) return;
-    h.onStart && h.onStart();
-    try { window.focus(); canvas.focus(); } catch (e) {}
-
-    if (typeof Mod.getFrames === 'function') {
-      let last = null, lastT = performance.now(), perCall = false, n = 0, zeroSecs = 0, warned = false, total = 0;
-      fpsTimer = setInterval(() => {
-        try {
-          const f = Number(Mod.getFrames()), now = performance.now();
-          if (n < 8) log(`[fps] getFrames() = ${f}`, 'text-zinc-400');
-          let fps = 0;
-          if (last !== null && f < last) perCall = true;           // el contador se reinicia al leerlo
-          if (perCall) { fps = f; total += f; }
-          else { total = f; if (last !== null && now > lastT) fps = (f - last) * 1000 / (now - lastT); }
-          last = f; lastT = now; n++;
-          fps = Math.max(0, Math.round(fps * 10) / 10);
-          h.onFps && h.onFps(fps, { reads: stats.reads, mb: stats.bytes / 1048576, frames: total });
-          zeroSecs = total > 0 ? 0 : zeroSecs + 1;
-          if (zeroSecs >= 20 && !warned) { warned = true; h.onStall && h.onStall({ reads: stats.reads, mb: stats.bytes / 1048576, lastPos: stats.lastPos }); }
-        } catch (e) { clearInterval(fpsTimer); }
-      }, 1000);
-    }
-    memTimer = setInterval(() => {
-      try {
-        const files = collectMemcards();
-        const sig = files.map(f => f.path + ':' + f.data.length + ':' + f.data.reduce((a, b, i) => (i % 997 === 0 ? (a * 31 + b) >>> 0 : a), 7)).join('|');
-        if (files.length && sig !== lastMemSig) { lastMemSig = sig; h.onMemcards && h.onMemcards(files); }
-      } catch (e) { /* ignorar */ }
-    }, 20000);
+    hooks.onProgress?.(1,0);
+    hooks.onStart?.();
+    window.focus(); canvas.focus(); pollInput();
+    let lastTime=performance.now(), lastFrameTime=lastTime, warned=false;
+    fpsTimer=setInterval(() => {
+      if (failed || stopped) return;
+      const now=performance.now(), frames=Number(Mod.getFrames());
+      Mod.clearStats(); // Official counter is explicitly reset, never guessed.
+      totalFrames+=frames;
+      if (frames) { lastFrameTime=now; warned=false; }
+      hooks.onFps?.(Math.round(frames*10000/(now-lastTime))/10,{reads:stats.reads,mb:stats.bytes/1048576,frames:totalFrames});
+      lastTime=now;
+      if (now-lastFrameTime>20000 && !warned) {
+        warned=true;
+        log(`[diagnóstico] frames=${totalFrames}, reads=${stats.reads}, pending=${stats.pending}, heap=${Mod.HEAPU8.byteLength}, main heartbeat OK. Estado interno de pthreads no exportado.`,'text-amber-300');
+        hooks.onStall?.({...stats,mb:stats.bytes/1048576});
+      }
+    },1000);
+    saveTimer=setInterval(persistCards,5000);
   }
-
-  function stop() { clearInterval(fpsTimer); clearInterval(memTimer); }
-
-  window.AVJ_PS2 = { support, boot, stop, collectMemcards };
+  function stop() { persistCards(); stopped=true; clearInterval(fpsTimer); clearInterval(saveTimer); cancelAnimationFrame(inputFrame); releaseInputs(); }
+  window.AVJ_PS2={support,boot,stop,collectMemcards,persistCards,diagnostics:() => ({...stats,totalFrames,failed,stopped})};
 })();
-</script>
-</body>
-</html>
+</script></body></html>
